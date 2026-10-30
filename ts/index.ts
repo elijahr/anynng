@@ -3,9 +3,9 @@
  * TypeScript + WebAssembly Entrypoint
  */
 
-export * from './types.js';
-export * from './runtime.js';
-import { AnynngBridge } from './runtime.js';
+export * from "./types.js";
+export * from "./runtime.js";
+import { AnynngBridge } from "./runtime.js";
 
 export async function createAnynng(): Promise<AnynngBridge> {
   const bridge = new AnynngBridge();

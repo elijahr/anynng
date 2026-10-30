@@ -25,12 +25,14 @@
     "build": "bash scripts/compile_wasm.sh && tsc",
     "compile:wasm": "bash scripts/compile_wasm.sh",
     "compile:ts": "tsc",
+    "pretest": "bash scripts/compile_wasm.sh",
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "fmt": "npx prettier --write 'ts/**/*.ts' 'tests/**/*.ts'"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "prettier": "^3.9.10",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   },

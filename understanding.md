@@ -76,9 +76,9 @@ Unlike TCP/IPC SP transports (which exchange an 8-byte `\0SP\0<proto><0x0000>` g
    NNG concatenates `nni_msg_header(msg)` + `nni_msg_body(msg)` into a single WebSocket binary message (which the browser's `WebSocket` implementation automatically frames/fragments/masks per RFC 6455 and reassembles before firing `onmessage`).
 3. **Never Send Data Frames from `SUB0` to `PUB0`:**
    In NNG's `PUB0` (`pub0_pipe_recv_cb` in `src/sp/protocol/pubsub0/pub.c`), topic filtering is **100% client-side (`SUB`-side)**. If a `SUB` client sends *any* WebSocket message to an NNG `PUB` server, NNG immediately closes the pipe (`nni_pipe_close`).
-4. **Malformed Headers Close the Pipe:**
-   - In `PAIR1`, if a frame is `< 4` bytes or the 32-bit big-endian hop count is `0` or `> 255` (`0xff`), NNG closes the connection (`stat_rx_malformed`). If `hop_count > ttl` (default `8`), NNG drops the message.
-   - In `REQ0`/`REP0` and `SURVEYOR0`/`RESPONDENT0`, if a frame ends before encountering a 4-byte big-endian word with bit 31 (`0x80000000`) set, NNG closes the connection.
+4. **Malformed Headers Close the Pipe vs. Silent Drops:**
+   - In `PAIR1`, if a frame is `< 4` bytes or the 32-bit big-endian hop count is `> 255` (`0xff`), NNG closes the connection (`stat_rx_malformed` per `nng/pair.c:339`). If `hop_count > ttl` (default `8`), NNG drops the message silently and keeps the pipe open. Hop count `0` on recv is tolerated by NNG.
+   - In `REQ0`/`REP0` and `SURVEYOR0`/`RESPONDENT0`, if a frame ends before encountering a 4-byte big-endian word with bit 31 (`0x80000000`) set, NNG closes the connection. However, if a valid frame carries an unknown or expired `reqId`, NNG drops it silently (`stat_rx_nomatch` per `nng/req.c:386`) without dropping the pipe.
 
 ### 2.3 Native `tcp://`, `ipc://`, and `udp://` Transport Wire Framing (`[VERIFIED]`)
 
@@ -87,9 +87,9 @@ Because NNG cleanly decouples the **SP Protocol Layer** (`REQ0`/`REP0`, `PUB0`/`
 | Transport | Handshake / Session Negotiation | Per-Message Framing on the Wire | Primary Source |
 | :--- | :--- | :--- | :--- |
 | **`ws://` / `wss://`** | HTTP `Upgrade: websocket` with `Sec-WebSocket-Protocol: <peer>.sp.nanomsg.org` (0 SP greeting bytes after upgrade) | 1 binary WebSocket message (`opcode = 0x2`) containing `sp_header \|\| sp_body` | [`src/sp/transport/ws/websocket.c`](https://github.com/nanomsg/nng/blob/main/src/sp/transport/ws/websocket.c) |
-| **`tcp://` & `tls+tcp://`** | Both peers send an **8-byte greeting**: `[0x00, 'S', 'P', 0x00, proto_self_hi, proto_self_lo, 0x00, 0x00]` and verify received `proto == peer_id` | **8-byte Big-Endian `uint64` length** prefix followed by `sp_header \|\| sp_body` | [`src/sp/transport/tcp/tcp.c`](https://github.com/nanomsg/nng/blob/main/src/sp/transport/tcp/tcp.c) |
-| **`ipc://`** | **8-byte greeting**: `[0x01, 'S', 'P', 0x00, proto_self_hi, proto_self_lo, 0x00, 0x00]` over Unix domain socket / named pipe | **8-byte Big-Endian `uint64` length** prefix followed by `sp_header \|\| sp_body` | [`src/sp/transport/ipc/ipc.c`](https://github.com/nanomsg/nng/blob/main/src/sp/transport/ipc/ipc.c) |
-| **`udp://` (NNG v2)** | Stateless/lightweight 8-byte `CREQ` (`op=1`) -> `CACK` (`op=2`) negotiation & periodic refresh (`recvmax`, `refresh` secs) | **8-byte `udp_sp_msg` header** (`ver: u8`, `opcode: u8`, `proto_type: u16`, `param0_len: u16`, `param1: u16`) + `sp_header \|\| sp_body` in a single UDP datagram | [`src/sp/transport/udp/udp.c`](https://github.com/nanomsg/nng/blob/main/src/sp/transport/udp/udp.c) |
+| **`tcp://` & `tls+tcp://`** | Both peers send an **8-byte greeting**: `[0x00, 'S', 'P', 0x00, proto_self_hi, proto_self_lo, 0x00, 0x00]` and verify received `proto == peer_id` | **8-byte Big-Endian `uint64` length** prefix (bounded by `recvMax`, default 1MB) followed by `sp_header \|\| sp_body` | [`src/sp/transport/tcp/tcp.c`](https://github.com/nanomsg/nng/blob/main/src/sp/transport/tcp/tcp.c) |
+| **`ipc://`** | **8-byte greeting**: `[0x00, 'S', 'P', 0x00, proto_self_hi, proto_self_lo, 0x00, 0x00]` over Unix domain socket / named pipe (byte 0 is strictly `0x00` per `ipc.c:604`) | **8-byte Big-Endian `uint64` length** prefix (bounded by `recvMax`) followed by `sp_header \|\| sp_body` | [`src/sp/transport/ipc/ipc.c`](https://github.com/nanomsg/nng/blob/main/src/sp/transport/ipc/ipc.c) |
+| **`udp://` (NNG v2)** | Stateless/lightweight 8-byte `CREQ` (`op=1`) -> `CACK` (`op=2`) negotiation & periodic refresh (`recvmax`, `refresh` secs) | **8-byte `udp_sp_msg` header** (`ver: u8`, `opcode: u8`, `proto_type: u16le`, `param0_len: u16le`, `param1: u16le` serialized Little-Endian per `nng/udp.c:494`) + `sp_header \|\| sp_body` in a single UDP datagram | [`src/sp/transport/udp/udp.c`](https://github.com/nanomsg/nng/blob/main/src/sp/transport/udp/udp.c) |
 | **`inproc://`** | Zero-copy in-memory pipe matching `proto_self == peer.proto_peer` | Direct in-memory `SpMsg` delivery | [`src/sp/transport/inproc/inproc.c`](https://github.com/nanomsg/nng/blob/main/src/sp/transport/inproc/inproc.c) |
 
 ---
@@ -174,9 +174,9 @@ type
     spPair0, spPair1, spPub0, spSub0, spReq0, spRep0,
     spPush0, spPull0, spSurveyor0, spRespondent0, spBus0
 
-func peerSubprotocol*(proto: SpProto): string =
-  ## Returns the exact Sec-WebSocket-Protocol string expected by an NNG listener.
-  ## Per sp-websocket-mapping-01, the dialer MUST send its PEER's protocol name!
+func dialerSubprotocol*(proto: SpProto): string =
+  ## Returns the Sec-WebSocket-Protocol string sent by an SP dialer.
+  ## Per sp-websocket-mapping-01 §2 and nng/websocket.c:561, the dialer MUST send its PEER's protocol name!
   case proto
   of spPair0:       "pair.sp.nanomsg.org"
   of spPair1:       "pair1.sp.nanomsg.org"
@@ -188,6 +188,22 @@ func peerSubprotocol*(proto: SpProto): string =
   of spPull0:       "push.sp.nanomsg.org"
   of spSurveyor0:   "respondent.sp.nanomsg.org"
   of spRespondent0: "surveyor.sp.nanomsg.org"
+  of spBus0:        "bus.sp.nanomsg.org"
+
+func listenerSubprotocol*(proto: SpProto): string =
+  ## Returns the Sec-WebSocket-Protocol string expected by an SP listener.
+  ## Per nng/websocket.c:592, the listener matches its OWN (self) protocol name!
+  case proto
+  of spPair0:       "pair.sp.nanomsg.org"
+  of spPair1:       "pair1.sp.nanomsg.org"
+  of spPub0:        "pub.sp.nanomsg.org"
+  of spSub0:        "sub.sp.nanomsg.org"
+  of spReq0:        "req.sp.nanomsg.org"
+  of spRep0:        "rep.sp.nanomsg.org"
+  of spPush0:       "push.sp.nanomsg.org"
+  of spPull0:       "pull.sp.nanomsg.org"
+  of spSurveyor0:   "surveyor.sp.nanomsg.org"
+  of spRespondent0: "respondent.sp.nanomsg.org"
   of spBus0:        "bus.sp.nanomsg.org"
 
 func putBeU32*(buf: var openArray[byte], offset: int, val: uint32) {.inline.} =
@@ -220,7 +236,7 @@ func encodePair1Frame*(payload: openArray[byte], hopCount: uint32 = 1'u32): seq[
 And the browser WebSocket FFI in `when defined(js):`:
 
 ```nim
-# src/browser_nng/ws_js.nim — Nim JS backend binding to native browser WebSocket
+# src/anynng/transports/js_ws.nim — Nim JS backend binding to native browser/Node WebSocket
 when defined(js):
   import std/[asyncjs, jsffi]
 
@@ -247,3 +263,100 @@ when defined(js):
   proc close*(ws: JsWebSocket, code: cint = 1000)
     {.importcpp: "#.close(#)".}
 ```
+
+---
+
+## Part 6: Verified NNG v1.12.4 Header Constants, Protocol Numbers & Wire Codecs
+
+Every constant and behavior below is extracted directly from the system C headers at `/opt/homebrew/opt/nng/include/nng/` on macOS arm64 (`[VERIFIED]`).
+
+### 6.1 Scalability Protocol 16-Bit Numbers & Subprotocols
+
+| Protocol Role | Protocol 16-bit ID (`SELF`) | Peer 16-bit ID (`PEER`) | Protocol Name | Peer Name | WebSocket Subprotocol (`Sec-WebSocket-Protocol`) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`PAIR0`** | `0x10` (`16`) | `0x10` (`16`) | `"pair"` | `"pair"` | `"pair.sp.nanomsg.org"` |
+| **`PAIR1`** | `0x11` (`17`) | `0x11` (`17`) | `"pair1"` | `"pair1"` | `"pair1.sp.nanomsg.org"` |
+| **`PUB0`** | `0x20` (`32`) | `0x21` (`33`) | `"pub"` | `"sub"` | `"sub.sp.nanomsg.org"` (Dialer sends Peer) |
+| **`SUB0`** | `0x21` (`33`) | `0x20` (`32`) | `"sub"` | `"pub"` | `"pub.sp.nanomsg.org"` (Dialer sends Peer) |
+| **`REQ0`** | `0x30` (`48`) | `0x31` (`49`) | `"req"` | `"rep"` | `"rep.sp.nanomsg.org"` (Dialer sends Peer) |
+| **`REP0`** | `0x31` (`49`) | `0x30` (`48`) | `"rep"` | `"req"` | `"req.sp.nanomsg.org"` (Dialer sends Peer) |
+| **`PUSH0`** | `0x50` (`80`) | `0x51` (`81`) | `"push"` | `"pull"` | `"pull.sp.nanomsg.org"` (Dialer sends Peer) |
+| **`PULL0`** | `0x51` (`81`) | `0x50` (`80`) | `"pull"` | `"push"` | `"push.sp.nanomsg.org"` (Dialer sends Peer) |
+| **`SURVEYOR0`** | `0x62` (`98`) | `0x63` (`99`) | `"surveyor"` | `"respondent"` | `"respondent.sp.nanomsg.org"` (Dialer sends Peer) |
+| **`RESPONDENT0`** | `0x63` (`99`) | `0x62` (`98`) | `"respondent"` | `"surveyor"` | `"surveyor.sp.nanomsg.org"` (Dialer sends Peer) |
+| **`BUS0`** | `0x70` (`112`) | `0x70` (`112`) | `"bus"` | `"bus"` | `"bus.sp.nanomsg.org"` |
+
+### 6.2 Protocol-Specific Socket Options (`/opt/homebrew/opt/nng/include/nng/protocol/*`)
+
+1. **`PAIR1`** (`protocol/pair1/pair.h`):
+   - `NNG_OPT_PAIR1_POLY = "pair1:polyamorous"` (`bool`): In polyamorous mode, pair1 supports 1-to-many bidirectional pipes with explicit pipe addressing in the header.
+2. **`PUBSUB0`** (`protocol/pubsub0/sub.h`):
+   - `NNG_OPT_SUB_SUBSCRIBE = "sub:subscribe"` (`seq[byte]` or `string`): Register topic filter prefix.
+   - `NNG_OPT_SUB_UNSUBSCRIBE = "sub:unsubscribe"` (`seq[byte]` or `string`): Remove topic filter prefix.
+   - `NNG_OPT_SUB_PREFNEW = "sub:prefnew"` (`bool`): Drop old messages instead of dropping new when recv buffer is full.
+3. **`REQREP0`** (`protocol/reqrep0/req.h`):
+   - `NNG_OPT_REQ_RESENDTIME = "req:resend-time"` (`nng_duration`, milliseconds, default 60000ms): Automatic resend interval if no reply arrives.
+   - `NNG_OPT_REQ_RESENDTICK = "req:resend-tick"` (`nng_duration`): Periodic timer granularity.
+4. **`SURVEY0`** (`protocol/survey0/survey.h`):
+   - `NNG_OPT_SURVEYOR_SURVEYTIME = "surveyor:survey-time"` (`nng_duration`, milliseconds, default 1000ms): Survey window duration after which responses are discarded and `recv()` returns timeout (`NNG_ETIMEDOUT`).
+
+### 6.3 Universal Socket Options (`/opt/homebrew/opt/nng/include/nng/nng.h`)
+
+- `NNG_OPT_SOCKNAME = "socket-name"`
+- `NNG_OPT_RAW = "raw"`
+- `NNG_OPT_PROTO = "protocol"`
+- `NNG_OPT_PROTONAME = "protocol-name"`
+- `NNG_OPT_PEER = "peer"`
+- `NNG_OPT_PEERNAME = "peer-name"`
+- `NNG_OPT_RECVBUF = "recv-buffer"`
+- `NNG_OPT_SENDBUF = "send-buffer"`
+- `NNG_OPT_RECVTIMEO = "recv-timeout"`
+- `NNG_OPT_SENDTIMEO = "send-timeout"`
+- `NNG_OPT_LOCADDR = "local-address"`
+- `NNG_OPT_REMADDR = "remote-address"`
+- `NNG_OPT_URL = "url"`
+- `NNG_OPT_MAXTTL = "ttl-max"` (default `8` hops)
+- `NNG_OPT_RECONNMINT = "reconnect-time-min"` (default `100` ms)
+- `NNG_OPT_RECONNMAXT = "reconnect-time-max"` (default `8000` ms)
+
+### 6.4 Transport Wire Framing Codecs
+
+1. **SP-Over-WebSocket Framing (`sp-websocket-mapping-01`)**:
+   - HTTP Upgrade: `Upgrade: websocket`, `Connection: Upgrade`, `Sec-WebSocket-Protocol: <peer>.sp.nanomsg.org`.
+   - Message Framing: Exactly 1 Binary WebSocket message (`opcode = 0x2`) = 1 SP message.
+   - Text frames (`opcode = 0x1`) trigger immediate WS close code `1003` (`WS_CLOSE_UNSUPP_FORMAT`).
+   - Unmasked frames received by server or masked frames received by client trigger WS close code `1002` (`WS_CLOSE_PROTOCOL_ERR`).
+2. **SP Stream Framing (`tcp://`, `ipc://`)**:
+   - 8-Byte Initial Greeting:
+     - Bytes 0..3: `\0SP\0` (`0x00, 0x53, 0x50, 0x00`)
+     - Bytes 4..5: 16-bit Big-Endian Protocol ID (`SELF`)
+     - Bytes 6..7: 16-bit Reserved (`0x0000`)
+   - Message Framing: 64-bit Big-Endian length header (`uint64`), followed by `header || body`.
+3. **NNG v2 UDP Datagram Framing (`udp://`)**:
+   - 8-Byte `udp_sp_msg` Header:
+     - Bytes 0..1: 16-bit Big-Endian Protocol ID
+     - Byte 2: Packet Type (`CREQ=0x01`, `CACK=0x02`, `DATA=0x03`, `DISC=0x04`, `MESH=0x05`)
+     - Byte 3: Flags
+     - Bytes 4..7: 32-bit Big-Endian Connection / Sequence ID
+
+---
+
+## Part 7: NimTS WASM Bridge & Polyform Multi-Target Enhancements
+
+### 7.1 `nimts` WebAssembly & TypeScript Architecture
+
+`/Users/eek/Development/nimts` exposes:
+1. **`{.exportts.}` Macro (`src/nimts/macros.nim`)**: Automatically annotates procedures and types for C-ABI WebAssembly export (`exportc, cdecl, dynlib`) while building an AST for TypeScript declaration emission (`.d.ts`).
+2. **Zero-Copy Memory Views (`NimTsView[T]`, `Uint8Array`)**: Allows WebAssembly linear memory (`WebAssembly.Memory`) to pass byte buffers directly to and from TypeScript without copying.
+3. **`anynng` Integration**: By compiling `src/anynng/core/` via `nimts compile --backend:standalone`, `anynng` generates a lightweight standalone WASM binary and companion `@axiomantic/anynng` TypeScript library, allowing JS/TS applications to use the exact same pure-Nim Sans-I/O wire codecs.
+
+### 7.2 `polyform` Template Multi-Target Roadmap
+
+From empirical inspection of `/Users/eek/Development/polyform/copier.yml`:
+1. **`has_nim_js` (or `has_js`) Facet**:
+   - Generates `just test-js` (`nim js -d:nodejs -r tests/test_js.nim`).
+   - Automates CI matrix testing under Node.js for pure-Nim libraries.
+2. **`nimts` First-Class Integration in `ts_bridge_strategy`**:
+   - Extends `ts_bridge_strategy` choices: `[nimts, wasm, napi, none]`.
+   - Wires up `@axiomantic/nimts`, Vite plugin integration, and automated TypeScript generation.
+

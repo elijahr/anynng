@@ -2,7 +2,8 @@
 
 version = "0.0.1"
 author = "Axiomantic Maintainers"
-description = "Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG / Scalability Protocols implementation"
+description =
+  "Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG / Scalability Protocols implementation"
 license = "MIT"
 srcDir = "src"
 installExt = @["nim"]
