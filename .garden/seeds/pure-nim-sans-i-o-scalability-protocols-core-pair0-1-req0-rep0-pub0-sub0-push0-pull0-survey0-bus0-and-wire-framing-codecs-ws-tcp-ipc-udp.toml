@@ -1,0 +1,8 @@
+id = "pure-nim-sans-i-o-scalability-protocols-core-pair0-1-req0-rep0-pub0-sub0-push0-pull0-survey0-bus0-and-wire-framing-codecs-ws-tcp-ipc-udp"
+title = "Pure-Nim Sans-I/O Scalability Protocols Core (PAIR0/1, REQ0/REP0, PUB0/SUB0, PUSH0/PULL0, SURVEY0, BUS0) and Wire Framing Codecs (WS, TCP/IPC, UDP)"
+season = "v0.1.0"
+sunlight = "blazing"
+tags = ["core", "sans-io", "protocols", "framing"]
+status = "SOWN"
+created_at = "2026-10-30T08:17:45Z"
+updated_at = "2026-10-30T08:17:45Z"
