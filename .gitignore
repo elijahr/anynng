@@ -1,4 +1,5 @@
 nimcache/
+nimcache_wasm/
 *.exe
 *.out
 *.dll
@@ -14,6 +15,7 @@ site/
 *.swp
 justfile.local
 .envrc
+tests/*.mjs
 
 
 # Documentation build artifacts
