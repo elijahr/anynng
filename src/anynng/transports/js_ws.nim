@@ -1,4 +1,5 @@
 # js_ws.nim - Pure-Nim WebAssembly / Browser & Node.js Native WebSocket Transport
+# Complements wasm_bridge for SP protocol framing in JS/WASM environments.
 # Licensed under MIT License.
 
 when defined(js):

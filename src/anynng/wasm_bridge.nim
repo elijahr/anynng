@@ -1,5 +1,6 @@
 # wasm_bridge.nim - WebAssembly & TypeScript Foreign Function Interface Bridge
 # Exports C-ABI / WASM functions for SP protocol state machines and wire framing.
+# Coordinates with JavaScript WebSocket transport (js_ws) for browser/Node clients.
 # Licensed under MIT License.
 
 import ./core/types
