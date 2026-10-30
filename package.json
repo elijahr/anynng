@@ -1,0 +1,38 @@
+{
+  "name": "@axiomantic/anynng",
+  "version": "0.0.1",
+  "description": "Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG / Scalability Protocols implementation",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js",
+      "default": "./dist/runtime.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bash scripts/compile_wasm.sh && tsc",
+    "compile:wasm": "bash scripts/compile_wasm.sh",
+    "compile:ts": "tsc",
+    "test": "vitest run",
+    "lint": "tsc --noEmit",
+    "fmt": "npx prettier --write 'ts/**/*.ts' 'tests/**/*.ts'"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "license": "MIT"
+}
