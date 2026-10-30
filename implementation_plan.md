@@ -42,7 +42,7 @@ For all development tracks:
 
 ### Wave 1: Sans-I/O Protocol Core (`anynng`) & Multi-Target Template Facets (`polyform`)
 
-- [ ] **Task 1.1: Pure-Nim Sans-I/O Core, Wire Framing Codecs, All 7 SP Protocol Families & `inproc://` Transport** (`anynng-architect`)
+- [x] **Task 1.1: Pure-Nim Sans-I/O Core, Wire Framing Codecs, All 7 SP Protocol Families & `inproc://` Transport** (`anynng-architect`) — *WOVEN (`b5342ce`, Audit Token: `7931ab03...`)*
   - *Task ID*: `task-core-engine`
   - *Strand*: `strand/task-core-engine` (in `/Users/eek/Development/anynng`)
   - *Lock*: `rhizo lock file:src/anynng.nim 900 --fencing`
@@ -62,7 +62,7 @@ For all development tracks:
   - *Holistic Verification*: `nim c -r tests/test_anynng.nim` and `nim js -d:nodejs -r tests/test_anynng.nim` pass 100% of framing, protocol state machine, negative control, and live `inproc://` socket tests.
   - *Weave*: `vine submit --author anynng-architect` -> Key 3 Audit by `anynng-auditor` -> `vine weave`.
 
-- [ ] **Task 1.2: Polyform Template Enhancements for `has_nim_js` & First-Class `nimts` Bridge** (`anynng-implementer`)
+- [x] **Task 1.2: Polyform Template Enhancements for `has_nim_js` & First-Class `nimts` Bridge** (`anynng-implementer`) — *WOVEN (`4cb1a94`, Audit Token: `ce65a3a2...`)*
   - *Task ID*: `task-polyform-js-wasm`
   - *Strand*: `strand/task-polyform-js-wasm` (in `/Users/eek/Development/polyform`)
   - *Provider*:
