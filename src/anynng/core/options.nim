@@ -271,7 +271,9 @@ proc initDefaultDescriptors() =
   registerOption("tcp:bound-port", optKindInt, optRo, {entListener})
   registerOption(NNG_OPT_UDP_COPY_MAX, optKindSize, optRw, {entDialer, entListener})
   registerOption(NNG_OPT_UDP_CONN_RETRY, optKindDuration, optRw, {entDialer})
-  registerOption(NNG_OPT_UDP_CONN_EXPIRE, optKindDuration, optRw, {entDialer, entListener})
+  registerOption(
+    NNG_OPT_UDP_CONN_EXPIRE, optKindDuration, optRw, {entDialer, entListener}
+  )
   registerOption(NNG_OPT_UDP_MAX_PEERS, optKindSize, optRw, {entListener})
   registerOption(NNG_OPT_DTLS_CONN_RATE, optKindSize, optRw, {entListener})
   registerOption(NNG_OPT_RECVFD, optKindInt, optRo, {entSocket})

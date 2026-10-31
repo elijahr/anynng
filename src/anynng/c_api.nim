@@ -3,7 +3,8 @@
 # Licensed under MIT License.
 
 when not defined(js):
-  import std/[tables, sets, monotimes, os, random, asyncdispatch, posix, deques, strutils]
+  import
+    std/[tables, sets, monotimes, os, random, asyncdispatch, posix, deques, strutils]
   import ../anynng
   import ./core/[types, options, tls]
   import ./core/protocols/pubsub0
@@ -77,7 +78,8 @@ when not defined(js):
     NngUdpObj* = object
       fd*: cint
 
-    NngLogger* = proc(level: cint, facility: cint, msgid: cstring, msg: cstring) {.cdecl.}
+    NngLogger* =
+      proc(level: cint, facility: cint, msgid: cstring, msg: cstring) {.cdecl.}
 
   var gHandleMtx: ptr Pthread_mutex = nil
 
@@ -139,7 +141,9 @@ when not defined(js):
         elif aio.ctxId == 0:
           s.pendingRecvCb = nil
 
-  proc nng_aio_skip_callback*(aio: ptr NngAioObj, skippedp: ptr bool) {.exportc, dynlib, cdecl.} =
+  proc nng_aio_skip_callback*(
+      aio: ptr NngAioObj, skippedp: ptr bool
+  ) {.exportc, dynlib, cdecl.} =
     if skippedp != nil:
       skippedp[] = false
 
@@ -359,7 +363,13 @@ when not defined(js):
       if (now - start) >= target:
         break
       let rem = int(target - (now - start))
-      let pollMs = if rem > 10: 10 elif rem > 0: rem else: 1
+      let pollMs =
+        if rem > 10:
+          10
+        elif rem > 0:
+          rem
+        else:
+          1
       try:
         poll(pollMs)
       except CatchableError:
@@ -399,14 +409,10 @@ when not defined(js):
   proc nng_log_set_logger*(logger: NngLogger) {.exportc, dynlib, cdecl.} =
     gCurrentLogger = logger
 
-  proc nng_log_err*(
-      msgid: cstring, msg: cstring
-  ) {.exportc, dynlib, cdecl, varargs.} =
+  proc nng_log_err*(msgid: cstring, msg: cstring) {.exportc, dynlib, cdecl, varargs.} =
     discard
 
-  proc nng_log_warn*(
-      msgid: cstring, msg: cstring
-  ) {.exportc, dynlib, cdecl, varargs.} =
+  proc nng_log_warn*(msgid: cstring, msg: cstring) {.exportc, dynlib, cdecl, varargs.} =
     discard
 
   proc nng_log_notice*(
@@ -414,9 +420,7 @@ when not defined(js):
   ) {.exportc, dynlib, cdecl, varargs.} =
     discard
 
-  proc nng_log_info*(
-      msgid: cstring, msg: cstring
-  ) {.exportc, dynlib, cdecl, varargs.} =
+  proc nng_log_info*(msgid: cstring, msg: cstring) {.exportc, dynlib, cdecl, varargs.} =
     discard
 
   proc nng_log_debug*(
@@ -770,13 +774,11 @@ when not defined(js):
   # ----------------------------------------------------------------------
 
   proc newNngUrl(
-      scheme, userinfo, hostname: string,
-      port: uint32,
-      path, query, frag: string
+      scheme, userinfo, hostname: string, port: uint32, path, query, frag: string
   ): ptr NngUrlObj =
     let totalLen =
-      scheme.len + 1 + userinfo.len + 1 + hostname.len + 1 +
-      path.len + 1 + query.len + 1 + frag.len + 1
+      scheme.len + 1 + userinfo.len + 1 + hostname.len + 1 + path.len + 1 + query.len + 1 +
+      frag.len + 1
     let buf = allocShared0(totalLen)
     let url = cast[ptr NngUrlObj](allocShared0(sizeof(NngUrlObj)))
     url.u_buffer = buf
@@ -913,22 +915,55 @@ when not defined(js):
   ): cint {.exportc, dynlib, cdecl.} =
     if dstp == nil or src == nil:
       return cint(NNG_EINVAL)
-    let scheme = if src.u_scheme != nil: $src.u_scheme else: ""
-    let userinfo = if src.u_userinfo != nil: $src.u_userinfo else: ""
-    let hostname = if src.u_hostname != nil: $src.u_hostname else: ""
-    let path = if src.u_path != nil: $src.u_path else: ""
-    let query = if src.u_query != nil: $src.u_query else: ""
-    let frag = if src.u_fragment != nil: $src.u_fragment else: ""
+    let scheme =
+      if src.u_scheme != nil:
+        $src.u_scheme
+      else:
+        ""
+    let userinfo =
+      if src.u_userinfo != nil:
+        $src.u_userinfo
+      else:
+        ""
+    let hostname =
+      if src.u_hostname != nil:
+        $src.u_hostname
+      else:
+        ""
+    let path =
+      if src.u_path != nil:
+        $src.u_path
+      else:
+        ""
+    let query =
+      if src.u_query != nil:
+        $src.u_query
+      else:
+        ""
+    let frag =
+      if src.u_fragment != nil:
+        $src.u_fragment
+      else:
+        ""
     dstp[] = newNngUrl(scheme, userinfo, hostname, src.u_port, path, query, frag)
     return 0
 
   proc urlToString(url: ptr NngUrlObj): string =
-    if url == nil: return ""
-    let scheme = if url.u_scheme != nil: $url.u_scheme else: ""
+    if url == nil:
+      return ""
+    let scheme =
+      if url.u_scheme != nil:
+        $url.u_scheme
+      else:
+        ""
     result = scheme & "://"
     if url.u_userinfo != nil and url.u_userinfo[0] != '\0':
       result &= $url.u_userinfo & "@"
-    let host = if url.u_hostname != nil: $url.u_hostname else: ""
+    let host =
+      if url.u_hostname != nil:
+        $url.u_hostname
+      else:
+        ""
     if host.contains(':') and not host.startsWith("["):
       result &= "[" & host & "]"
     else:
@@ -1948,10 +1983,14 @@ when not defined(js):
           nng_aio_set_msg(aio, m)
         nng_aio_finish(aio, cint(res))
 
-  proc nng_socket_send*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+  proc nng_socket_send*(
+      s: NngSocketObj, aio: ptr NngAioObj
+  ) {.exportc, dynlib, cdecl.} =
     nng_send_aio(s, aio)
 
-  proc nng_socket_recv*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+  proc nng_socket_recv*(
+      s: NngSocketObj, aio: ptr NngAioObj
+  ) {.exportc, dynlib, cdecl.} =
     nng_recv_aio(s, aio)
 
   proc nng_ctx_send*(c: NngCtxObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =

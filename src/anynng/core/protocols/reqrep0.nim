@@ -29,7 +29,9 @@ type
     maxTtl*: uint32
 
 func initReq0Engine*(
-    raw: bool = false, resendTimeMs: int64 = DefaultReqResendTime, maxTtl: uint32 = DefaultMaxTtl
+    raw: bool = false,
+    resendTimeMs: int64 = DefaultReqResendTime,
+    maxTtl: uint32 = DefaultMaxTtl,
 ): Req0Engine =
   result.pipes = @[]
   result.currentPipeIdx = 0

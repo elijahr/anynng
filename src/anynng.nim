@@ -553,7 +553,7 @@ proc attachEndpoint(
         ep.send(data)
       except NngError as e:
         if (s.raw and s.engineKind in {engRep0, engRespondent0, engSurveyor0}) or
-           (s.engineKind in {engPub0, engSurveyor0, engBus0}):
+            (s.engineKind in {engPub0, engSurveyor0, engBus0}):
           discard
         else:
           raise e
@@ -597,9 +597,10 @@ proc setOpt*(s: Socket, name: string, val: bool) =
     s.pair1Eng.injectHeader = val
 
 proc setOpt*(s: Socket, name: string, val: int) =
-  if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and
-      ((s.engineKind in {engPub0, engBus0} and val == 0) or
-       (s.engineKind == engSub0 and not s.raw and val == 0)):
+  if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and (
+    (s.engineKind in {engPub0, engBus0} and val == 0) or
+    (s.engineKind == engSub0 and not s.raw and val == 0)
+  ):
     raise newNngError(NNG_EINVAL, "Buffer size 0 not supported on pub/sub/bus")
   s.options.setInt(name, val)
   if name == NNG_OPT_SENDBUF:
@@ -807,9 +808,10 @@ proc recvStr*(ctx: Context, timeoutMs: int = -1): string =
     copyMem(addr result[0], unsafeAddr body[0], body.len)
 
 proc setOpt*(ctx: Context, name: string, val: int) =
-  if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and
-      ((ctx.socket.engineKind in {engPub0, engBus0} and val == 0) or
-       (ctx.socket.engineKind == engSub0 and not ctx.socket.raw and val == 0)):
+  if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and (
+    (ctx.socket.engineKind in {engPub0, engBus0} and val == 0) or
+    (ctx.socket.engineKind == engSub0 and not ctx.socket.raw and val == 0)
+  ):
     raise newNngError(NNG_EINVAL, "Buffer size 0 not supported on pub/sub/bus")
   ctx.options.setInt(name, val)
 
