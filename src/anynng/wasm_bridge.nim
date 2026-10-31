@@ -377,10 +377,14 @@ proc anynng_pipe_event_name*(ev: int32, outBuf: cstring, outCap: int32): int32 =
   ## Returns pipe event name string ("add_pre", "add_post", "rem_post").
   var name: string
   case ev
-  of 1: name = "add_pre"
-  of 2: name = "add_post"
-  of 3: name = "rem_post"
-  else: name = "unknown"
+  of 1:
+    name = "add_pre"
+  of 2:
+    name = "add_post"
+  of 3:
+    name = "rem_post"
+  else:
+    name = "unknown"
   if outBuf != nil and outCap > name.len:
     copyMem(outBuf, cstring(name), name.len + 1)
     return int32(name.len)

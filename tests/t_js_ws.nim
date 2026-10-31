@@ -35,15 +35,18 @@ else:
     return p
 
   proc startMockWssServer(): Future[JsObject] =
-    let p = newPromise[JsObject](proc(resolve: proc(val: JsObject)) =
-      {.emit: """
+    let p = newPromise[JsObject](
+      proc(resolve: proc(val: JsObject)) =
+        {.
+          emit: """
       process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
       import('./helpers/mock_ws_server.mjs').then(mod => {
         return mod.createSpWssServer(0);
       }).then(server => {
         `resolve`(`server`);
       });
-      """.}
+      """
+        .}
     )
     return p
 

@@ -119,17 +119,28 @@ when defined(js):
 
   proc stepEngine(s: JsWsSocket, ev: EngineEvent): seq[EngineAction] =
     case s.proto
-    of spPair0: s.pair0.step(ev)
-    of spPair1: s.pair1.step(ev)
-    of spPub0: s.pub0.step(ev)
-    of spSub0: s.sub0.step(ev)
-    of spReq0: s.req0.step(ev)
-    of spRep0: s.rep0.step(ev)
-    of spPush0: s.push0.step(ev)
-    of spPull0: s.pull0.step(ev)
-    of spSurveyor0: s.surveyor0.step(ev)
-    of spRespondent0: s.respondent0.step(ev)
-    of spBus0: s.bus0.step(ev)
+    of spPair0:
+      s.pair0.step(ev)
+    of spPair1:
+      s.pair1.step(ev)
+    of spPub0:
+      s.pub0.step(ev)
+    of spSub0:
+      s.sub0.step(ev)
+    of spReq0:
+      s.req0.step(ev)
+    of spRep0:
+      s.rep0.step(ev)
+    of spPush0:
+      s.push0.step(ev)
+    of spPull0:
+      s.pull0.step(ev)
+    of spSurveyor0:
+      s.surveyor0.step(ev)
+    of spRespondent0:
+      s.respondent0.step(ev)
+    of spBus0:
+      s.bus0.step(ev)
 
   proc findContext(s: JsWsSocket, ctxId: CtxId): JsContext =
     for ctx in s.contexts:
@@ -157,7 +168,11 @@ when defined(js):
           {.emit: "clearInterval(`timer`);".}
           s.reqResendTimer = nil
 
-        let targetCtx = if action.ctxId > 1: s.findContext(action.ctxId) else: nil
+        let targetCtx =
+          if action.ctxId > 1:
+            s.findContext(action.ctxId)
+          else:
+            nil
         if targetCtx != nil:
           if targetCtx.resendTimer != nil:
             let timer = targetCtx.resendTimer
@@ -187,17 +202,28 @@ when defined(js):
 
   proc initSocketEngine(sock: JsWsSocket) =
     case sock.proto
-    of spPair0: sock.pair0 = initPair0Engine(sock.raw)
-    of spPair1: sock.pair1 = initPair1Engine(sock.polyamorous, sock.raw, uint32(sock.maxTtl))
-    of spPub0: sock.pub0 = initPub0Engine(sock.raw)
-    of spSub0: sock.sub0 = initSub0Engine(sock.raw)
-    of spReq0: sock.req0 = initReq0Engine(sock.raw, int64(sock.resendTimeMs))
-    of spRep0: sock.rep0 = initRep0Engine(sock.raw, uint32(sock.maxTtl))
-    of spPush0: sock.push0 = initPush0Engine(sock.raw)
-    of spPull0: sock.pull0 = initPull0Engine(sock.raw)
-    of spSurveyor0: sock.surveyor0 = initSurveyor0Engine(sock.raw, int64(sock.surveyTimeMs))
-    of spRespondent0: sock.respondent0 = initRespondent0Engine(sock.raw, uint32(sock.maxTtl))
-    of spBus0: sock.bus0 = initBus0Engine(sock.raw)
+    of spPair0:
+      sock.pair0 = initPair0Engine(sock.raw)
+    of spPair1:
+      sock.pair1 = initPair1Engine(sock.polyamorous, sock.raw, uint32(sock.maxTtl))
+    of spPub0:
+      sock.pub0 = initPub0Engine(sock.raw)
+    of spSub0:
+      sock.sub0 = initSub0Engine(sock.raw)
+    of spReq0:
+      sock.req0 = initReq0Engine(sock.raw, int64(sock.resendTimeMs))
+    of spRep0:
+      sock.rep0 = initRep0Engine(sock.raw, uint32(sock.maxTtl))
+    of spPush0:
+      sock.push0 = initPush0Engine(sock.raw)
+    of spPull0:
+      sock.pull0 = initPull0Engine(sock.raw)
+    of spSurveyor0:
+      sock.surveyor0 = initSurveyor0Engine(sock.raw, int64(sock.surveyTimeMs))
+    of spRespondent0:
+      sock.respondent0 = initRespondent0Engine(sock.raw, uint32(sock.maxTtl))
+    of spBus0:
+      sock.bus0 = initBus0Engine(sock.raw)
 
   proc newJsWsSocket*(proto: SpProto, raw: bool = false): JsWsSocket =
     result = JsWsSocket(
@@ -223,7 +249,7 @@ when defined(js):
       nextCtxId: 2,
       surveyDeadline: 0.0,
       reqResendTimer: nil,
-      lastReqMsg: initSpMsg(@[])
+      lastReqMsg: initSpMsg(@[]),
     )
     result.initSocketEngine()
 
@@ -231,101 +257,107 @@ when defined(js):
     let jsUrl = cstring(url)
     let jsSub = cstring(dialerSubprotocol(sock.proto))
     sock.url = url
-    let p = newPromise(proc(resolve: proc()) =
-      var ws: JsWebSocket
-      {.emit: "`ws` = new globalThis.WebSocket(`jsUrl`, `jsSub`);".}
-      {.emit: "`ws`.binaryType = 'arraybuffer';".}
-      sock.ws = ws
+    let p = newPromise(
+      proc(resolve: proc()) =
+        var ws: JsWebSocket
+        {.emit: "`ws` = new globalThis.WebSocket(`jsUrl`, `jsSub`);".}
+        {.emit: "`ws`.binaryType = 'arraybuffer';".}
+        sock.ws = ws
 
-      var settled = false
+        var settled = false
 
-      let onOpenCb = proc() =
-        if settled: return
-        settled = true
-
-        let pipeId = sock.pipeId
-        var allow = true
-        if sock.pipeNotifyHook != nil:
-          allow = sock.pipeNotifyHook(pipeId, pipeEvAddPre)
-
-        if not allow:
-          sock.isOpen = false
-          let curWs = sock.ws
-          if curWs != nil:
-            {.emit: "`curWs`.close(1000);".}
-          if sock.pipeNotifyHook != nil:
-            discard sock.pipeNotifyHook(pipeId, pipeEvRemPost)
-          resolve()
-          return
-
-        sock.isOpen = true
-        let acts = sock.stepEngine(EngineEvent(kind: evPipeAdded, pipeId: pipeId))
-        sock.dispatchActions(acts)
-        if sock.pipeNotifyHook != nil:
-          discard sock.pipeNotifyHook(pipeId, pipeEvAddPost)
-        resolve()
-
-      let onErrorCb = proc(err: JsObject) =
-        if not settled:
+        let onOpenCb = proc() =
+          if settled:
+            return
           settled = true
-          resolve()
 
-      let onMessageCb = proc(ev: JsMessageEvent) =
-        var u8: JsUint8Array
-        {.emit: "`u8` = new Uint8Array(`ev`.data);".}
-        let rawFrame = toSeqByte(u8)
+          let pipeId = sock.pipeId
+          var allow = true
+          if sock.pipeNotifyHook != nil:
+            allow = sock.pipeNotifyHook(pipeId, pipeEvAddPre)
 
-        # Enforce recvMaxSize buffer boundary
-        if rawFrame.len > sock.recvMaxSize:
-          return
+          if not allow:
+            sock.isOpen = false
+            let curWs = sock.ws
+            if curWs != nil:
+              {.emit: "`curWs`.close(1000);".}
+            if sock.pipeNotifyHook != nil:
+              discard sock.pipeNotifyHook(pipeId, pipeEvRemPost)
+            resolve()
+            return
 
-        if sock.raw:
-          # Raw mode bypasses cooked protocol engine
-          if sock.recvWaiters.len > 0:
-            let waiter = sock.recvWaiters[0]
-            sock.recvWaiters.delete(0)
-            waiter(rawFrame)
-          else:
-            sock.recvQueue.add(rawFrame)
-          return
-
-        let acts = sock.stepEngine(EngineEvent(
-          kind: evPipeMessage,
-          pipeId: sock.pipeId,
-          rawFrame: rawFrame
-        ))
-        sock.dispatchActions(acts)
-
-      let onCloseCb = proc(ev: JsObject) =
-        let wasOpen = sock.isOpen
-        sock.isOpen = false
-        sock.isClosed = true
-        if wasOpen:
-          let acts = sock.stepEngine(EngineEvent(kind: evPipeRemoved, pipeId: sock.pipeId))
+          sock.isOpen = true
+          let acts = sock.stepEngine(EngineEvent(kind: evPipeAdded, pipeId: pipeId))
           sock.dispatchActions(acts)
           if sock.pipeNotifyHook != nil:
-            discard sock.pipeNotifyHook(sock.pipeId, pipeEvRemPost)
+            discard sock.pipeNotifyHook(pipeId, pipeEvAddPost)
+          resolve()
 
-        if sock.dialer != nil and sock.dialer.active:
-          let d = sock.dialer
-          let delay = d.currentBackoffMs
-          d.currentBackoffMs = min(d.currentBackoffMs * 2, d.reconnectTimeMaxMs)
-          let dialerRef = d
-          let retryCb = proc() =
-            if dialerRef.active:
-              discard dialerRef.start()
-          var timerId: JsObject
-          {.emit: "`timerId` = setTimeout(`retryCb`, `delay`);".}
-          d.reconnectTimer = timerId
+        let onErrorCb = proc(err: JsObject) =
+          if not settled:
+            settled = true
+            resolve()
 
-      {.emit: "`ws`.onopen = `onOpenCb`;".}
-      {.emit: "`ws`.onerror = `onErrorCb`;".}
-      {.emit: "`ws`.onmessage = `onMessageCb`;".}
-      {.emit: "`ws`.onclose = `onCloseCb`;".}
+        let onMessageCb = proc(ev: JsMessageEvent) =
+          var u8: JsUint8Array
+          {.emit: "`u8` = new Uint8Array(`ev`.data);".}
+          let rawFrame = toSeqByte(u8)
+
+          # Enforce recvMaxSize buffer boundary
+          if rawFrame.len > sock.recvMaxSize:
+            return
+
+          if sock.raw:
+            # Raw mode bypasses cooked protocol engine
+            if sock.recvWaiters.len > 0:
+              let waiter = sock.recvWaiters[0]
+              sock.recvWaiters.delete(0)
+              waiter(rawFrame)
+            else:
+              sock.recvQueue.add(rawFrame)
+            return
+
+          let acts = sock.stepEngine(
+            EngineEvent(kind: evPipeMessage, pipeId: sock.pipeId, rawFrame: rawFrame)
+          )
+          sock.dispatchActions(acts)
+
+        let onCloseCb = proc(ev: JsObject) =
+          let wasOpen = sock.isOpen
+          sock.isOpen = false
+          sock.isClosed = true
+          if wasOpen:
+            let acts =
+              sock.stepEngine(EngineEvent(kind: evPipeRemoved, pipeId: sock.pipeId))
+            sock.dispatchActions(acts)
+            if sock.pipeNotifyHook != nil:
+              discard sock.pipeNotifyHook(sock.pipeId, pipeEvRemPost)
+
+          if sock.dialer != nil and sock.dialer.active:
+            let d = sock.dialer
+            let delay = d.currentBackoffMs
+            d.currentBackoffMs = min(d.currentBackoffMs * 2, d.reconnectTimeMaxMs)
+            let dialerRef = d
+            let retryCb = proc() =
+              if dialerRef.active:
+                discard dialerRef.start()
+            var timerId: JsObject
+            {.emit: "`timerId` = setTimeout(`retryCb`, `delay`);".}
+            d.reconnectTimer = timerId
+
+        {.emit: "`ws`.onopen = `onOpenCb`;".}
+        {.emit: "`ws`.onerror = `onErrorCb`;".}
+        {.emit: "`ws`.onmessage = `onMessageCb`;".}
+        {.emit: "`ws`.onclose = `onCloseCb`;".}
     )
     return p
 
-  proc dialJsWs*(url: string, proto: SpProto, raw: bool = false, pipeNotifyHook: PipeNotifyHook = nil): Future[JsWsSocket] {.async.} =
+  proc dialJsWs*(
+      url: string,
+      proto: SpProto,
+      raw: bool = false,
+      pipeNotifyHook: PipeNotifyHook = nil,
+  ): Future[JsWsSocket] {.async.} =
     let sock = newJsWsSocket(proto, raw)
     sock.pipeNotifyHook = pipeNotifyHook
     await sock.connectWs(url)
@@ -338,90 +370,104 @@ when defined(js):
     case name
     of "ttl-max", "maxTtl":
       s.maxTtl = val
-      if s.proto == spPair1: s.pair1.maxTtl = uint32(val)
-      elif s.proto == spRep0: s.rep0.maxTtl = uint32(val)
-      elif s.proto == spRespondent0: s.respondent0.maxTtl = uint32(val)
+      if s.proto == spPair1:
+        s.pair1.maxTtl = uint32(val)
+      elif s.proto == spRep0:
+        s.rep0.maxTtl = uint32(val)
+      elif s.proto == spRespondent0:
+        s.respondent0.maxTtl = uint32(val)
     of "recv-max-size", "recvMaxSize":
       s.recvMaxSize = val
     of "req:resend-time", "resendTime":
       s.resendTimeMs = val
-      if s.proto == spReq0: s.req0.resendTimeMs = int64(val)
+      if s.proto == spReq0:
+        s.req0.resendTimeMs = int64(val)
     of "surveyor:survey-time", "surveyTime":
       s.surveyTimeMs = val
-      if s.proto == spSurveyor0: s.surveyor0.surveyTimeMs = int64(val)
+      if s.proto == spSurveyor0:
+        s.surveyor0.surveyTimeMs = int64(val)
     of "reconnect-time-min", "reconnectTimeMin":
       s.reconnectTimeMinMs = val
     of "reconnect-time-max", "reconnectTimeMax":
       s.reconnectTimeMaxMs = val
-    else: discard
+    else:
+      discard
 
   proc getOptInt*(s: JsWsSocket, name: string): int =
     case name
-    of "ttl-max", "maxTtl": return s.maxTtl
-    of "recv-max-size", "recvMaxSize": return s.recvMaxSize
-    of "req:resend-time", "resendTime": return s.resendTimeMs
-    of "surveyor:survey-time", "surveyTime": return s.surveyTimeMs
-    of "reconnect-time-min", "reconnectTimeMin": return s.reconnectTimeMinMs
-    of "reconnect-time-max", "reconnectTimeMax": return s.reconnectTimeMaxMs
-    else: return 0
+    of "ttl-max", "maxTtl":
+      return s.maxTtl
+    of "recv-max-size", "recvMaxSize":
+      return s.recvMaxSize
+    of "req:resend-time", "resendTime":
+      return s.resendTimeMs
+    of "surveyor:survey-time", "surveyTime":
+      return s.surveyTimeMs
+    of "reconnect-time-min", "reconnectTimeMin":
+      return s.reconnectTimeMinMs
+    of "reconnect-time-max", "reconnectTimeMax":
+      return s.reconnectTimeMaxMs
+    else:
+      return 0
 
   proc setOptBool*(s: JsWsSocket, name: string, val: bool) =
     case name
     of "pair1:polyamorous", "polyamorous":
       s.polyamorous = val
-      if s.proto == spPair1: s.pair1.polyamorous = val
+      if s.proto == spPair1:
+        s.pair1.polyamorous = val
     of "raw":
       s.raw = val
-    else: discard
+    else:
+      discard
 
   proc getOptBool*(s: JsWsSocket, name: string): bool =
     case name
-    of "pair1:polyamorous", "polyamorous": return s.polyamorous
-    of "raw": return s.raw
-    else: return false
+    of "pair1:polyamorous", "polyamorous":
+      return s.polyamorous
+    of "raw":
+      return s.raw
+    else:
+      return false
 
   proc send*(s: JsWsSocket, data: seq[byte]): Future[void] =
     let payload = data
-    let p = newPromise(proc(resolve: proc()) =
-      if s.isClosed:
+    let p = newPromise(
+      proc(resolve: proc()) =
+        if s.isClosed:
+          resolve()
+          return
+
+        if s.raw:
+          let u8 = toUint8Array(payload)
+          let curWs = s.ws
+          if curWs != nil:
+            {.emit: "`curWs`.send(`u8`);".}
+          resolve()
+          return
+
+        let msg = initSpMsg(payload)
+        let acts = s.stepEngine(EngineEvent(kind: evUserSend, ctxId: 1, msg: msg))
+        s.dispatchActions(acts)
+
+        if s.proto == spSurveyor0 and s.surveyTimeMs > 0:
+          s.surveyDeadline = jsNow() + float64(s.surveyTimeMs)
+
+        if s.proto == spReq0 and s.resendTimeMs > 0:
+          s.lastReqMsg = msg
+          let sockRef = s
+          let resendMs = s.resendTimeMs
+          let timerCb = proc() =
+            if not sockRef.isClosed and sockRef.req0.pending.len > 0:
+              let reActs = sockRef.stepEngine(
+                EngineEvent(kind: evTimerTick, nowMs: int64(jsNow()))
+              )
+              sockRef.dispatchActions(reActs)
+          var timerId: JsObject
+          {.emit: "`timerId` = setInterval(`timerCb`, `resendMs`);".}
+          s.reqResendTimer = timerId
+
         resolve()
-        return
-
-      if s.raw:
-        let u8 = toUint8Array(payload)
-        let curWs = s.ws
-        if curWs != nil:
-          {.emit: "`curWs`.send(`u8`);".}
-        resolve()
-        return
-
-      let msg = initSpMsg(payload)
-      let acts = s.stepEngine(EngineEvent(
-        kind: evUserSend,
-        ctxId: 1,
-        msg: msg
-      ))
-      s.dispatchActions(acts)
-
-      if s.proto == spSurveyor0 and s.surveyTimeMs > 0:
-        s.surveyDeadline = jsNow() + float64(s.surveyTimeMs)
-
-      if s.proto == spReq0 and s.resendTimeMs > 0:
-        s.lastReqMsg = msg
-        let sockRef = s
-        let resendMs = s.resendTimeMs
-        let timerCb = proc() =
-          if not sockRef.isClosed and sockRef.req0.pending.len > 0:
-            let reActs = sockRef.stepEngine(EngineEvent(
-              kind: evTimerTick,
-              nowMs: int64(jsNow())
-            ))
-            sockRef.dispatchActions(reActs)
-        var timerId: JsObject
-        {.emit: "`timerId` = setInterval(`timerCb`, `resendMs`);".}
-        s.reqResendTimer = timerId
-
-      resolve()
     )
     return p
 
@@ -429,17 +475,19 @@ when defined(js):
     s.send(@data)
 
   proc recv*(s: JsWsSocket): Future[seq[byte]] =
-    let p = newPromise[seq[byte]](proc(resolve: proc(val: seq[byte])) =
-      if s.recvQueue.len > 0:
-        let msg = s.recvQueue[0]
-        s.recvQueue.delete(0)
-        resolve(msg)
-      elif s.isClosed:
-        resolve(@[])
-      else:
-        s.recvWaiters.add(proc(val: seq[byte]) =
-          resolve(val)
-        )
+    let p = newPromise[seq[byte]](
+      proc(resolve: proc(val: seq[byte])) =
+        if s.recvQueue.len > 0:
+          let msg = s.recvQueue[0]
+          s.recvQueue.delete(0)
+          resolve(msg)
+        elif s.isClosed:
+          resolve(@[])
+        else:
+          s.recvWaiters.add(
+            proc(val: seq[byte]) =
+              resolve(val)
+          )
     )
     return p
 
@@ -452,22 +500,23 @@ when defined(js):
       s.sub0.unsubscribe(topic)
 
   proc close*(s: JsWsSocket): Future[void] =
-    let p = newPromise(proc(resolve: proc()) =
-      s.isClosed = true
-      if s.reqResendTimer != nil:
-        let timer = s.reqResendTimer
-        {.emit: "clearInterval(`timer`);".}
-        s.reqResendTimer = nil
-      for ctx in s.contexts:
-        ctx.isClosed = true
-        if ctx.resendTimer != nil:
-          let timer = ctx.resendTimer
+    let p = newPromise(
+      proc(resolve: proc()) =
+        s.isClosed = true
+        if s.reqResendTimer != nil:
+          let timer = s.reqResendTimer
           {.emit: "clearInterval(`timer`);".}
-          ctx.resendTimer = nil
-      let ws = s.ws
-      if ws != nil:
-        {.emit: "`ws`.close(1000);".}
-      resolve()
+          s.reqResendTimer = nil
+        for ctx in s.contexts:
+          ctx.isClosed = true
+          if ctx.resendTimer != nil:
+            let timer = ctx.resendTimer
+            {.emit: "clearInterval(`timer`);".}
+            ctx.resendTimer = nil
+        let ws = s.ws
+        if ws != nil:
+          {.emit: "`ws`.close(1000);".}
+        resolve()
     )
     return p
 
@@ -475,7 +524,9 @@ when defined(js):
   # Context Multiplexing
   # ----------------------------------------------------------------------
 
-  proc openContext*(s: JsWsSocket, recvTimeoutMs: int = 0, resendTimeMs: int = 0): JsContext =
+  proc openContext*(
+      s: JsWsSocket, recvTimeoutMs: int = 0, resendTimeMs: int = 0
+  ): JsContext =
     let ctxId = s.nextCtxId
     inc s.nextCtxId
     let ctx = JsContext(
@@ -488,58 +539,56 @@ when defined(js):
       recvWaiters: @[],
       pendingReqId: 0'u32,
       resendTimer: nil,
-      lastSentMsg: initSpMsg(@[])
+      lastSentMsg: initSpMsg(@[]),
     )
     s.contexts.add(ctx)
     return ctx
 
   proc send*(ctx: JsContext, data: seq[byte]): Future[void] =
     let payload = data
-    let p = newPromise(proc(resolve: proc()) =
-      if ctx.isClosed or ctx.socket.isClosed:
+    let p = newPromise(
+      proc(resolve: proc()) =
+        if ctx.isClosed or ctx.socket.isClosed:
+          resolve()
+          return
+
+        let msg = initSpMsg(payload)
+        let acts =
+          ctx.socket.stepEngine(EngineEvent(kind: evUserSend, ctxId: ctx.id, msg: msg))
+        ctx.socket.dispatchActions(acts)
+
+        if ctx.socket.proto == spReq0 and ctx.resendTimeMs > 0:
+          ctx.lastSentMsg = msg
+          let ctxRef = ctx
+          let resendMs = ctx.resendTimeMs
+          let timerCb = proc() =
+            if not ctxRef.isClosed and not ctxRef.socket.isClosed:
+              let reActs = ctxRef.socket.stepEngine(
+                EngineEvent(kind: evUserSend, ctxId: ctxRef.id, msg: ctxRef.lastSentMsg)
+              )
+              ctxRef.socket.dispatchActions(reActs)
+          var timerId: JsObject
+          {.emit: "`timerId` = setInterval(`timerCb`, `resendMs`);".}
+          ctx.resendTimer = timerId
+
         resolve()
-        return
-
-      let msg = initSpMsg(payload)
-      let acts = ctx.socket.stepEngine(EngineEvent(
-        kind: evUserSend,
-        ctxId: ctx.id,
-        msg: msg
-      ))
-      ctx.socket.dispatchActions(acts)
-
-      if ctx.socket.proto == spReq0 and ctx.resendTimeMs > 0:
-        ctx.lastSentMsg = msg
-        let ctxRef = ctx
-        let resendMs = ctx.resendTimeMs
-        let timerCb = proc() =
-          if not ctxRef.isClosed and not ctxRef.socket.isClosed:
-            let reActs = ctxRef.socket.stepEngine(EngineEvent(
-              kind: evUserSend,
-              ctxId: ctxRef.id,
-              msg: ctxRef.lastSentMsg
-            ))
-            ctxRef.socket.dispatchActions(reActs)
-        var timerId: JsObject
-        {.emit: "`timerId` = setInterval(`timerCb`, `resendMs`);".}
-        ctx.resendTimer = timerId
-
-      resolve()
     )
     return p
 
   proc recv*(ctx: JsContext): Future[seq[byte]] =
-    let p = newPromise[seq[byte]](proc(resolve: proc(val: seq[byte])) =
-      if ctx.recvQueue.len > 0:
-        let msg = ctx.recvQueue[0]
-        ctx.recvQueue.delete(0)
-        resolve(msg)
-      elif ctx.isClosed or ctx.socket.isClosed:
-        resolve(@[])
-      else:
-        ctx.recvWaiters.add(proc(val: seq[byte]) =
-          resolve(val)
-        )
+    let p = newPromise[seq[byte]](
+      proc(resolve: proc(val: seq[byte])) =
+        if ctx.recvQueue.len > 0:
+          let msg = ctx.recvQueue[0]
+          ctx.recvQueue.delete(0)
+          resolve(msg)
+        elif ctx.isClosed or ctx.socket.isClosed:
+          resolve(@[])
+        else:
+          ctx.recvWaiters.add(
+            proc(val: seq[byte]) =
+              resolve(val)
+          )
     )
     return p
 
@@ -554,7 +603,9 @@ when defined(js):
   # Dialer with Auto-Reconnect Backoff
   # ----------------------------------------------------------------------
 
-  proc newJsDialer*(s: JsWsSocket, url: string, reconnectMin: int = 100, reconnectMax: int = 10000): JsDialer =
+  proc newJsDialer*(
+      s: JsWsSocket, url: string, reconnectMin: int = 100, reconnectMax: int = 10000
+  ): JsDialer =
     result = JsDialer(
       socket: s,
       url: url,
@@ -563,7 +614,7 @@ when defined(js):
       reconnectTimeMinMs: reconnectMin,
       reconnectTimeMaxMs: reconnectMax,
       currentBackoffMs: reconnectMin,
-      reconnectTimer: nil
+      reconnectTimer: nil,
     )
     s.dialer = result
 
