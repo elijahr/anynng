@@ -115,6 +115,62 @@ For all development tracks:
 
 ---
 
+### Season `v0.2.0` — Wave 3: Full NNG Core Runtime, Options/Contexts/Timers/Devices, Native TLS (`tls+tcp://` & `wss://`), and JS/WASM Parity
+
+- [ ] **Task 3.1: Full NNG Core Runtime (`Options`, `Dialer`/`Listener` Port-0 & Auto-Reconnect, `Pipe`/`pipeNotify`, `Context`, Protocol Timers, `device`) & Native OpenSSL 3 TLS (`tls+tcp://`, `wss://`, `TlsConfig`)** (`anynng-architect`)
+  - *Dependency*: Season `v0.2.0` Phase 3 (`task-v2-dialectic-parity` — WOVEN `60f5c7f`)
+  - *Task ID*: `task-v2-core-runtime-tls`
+  - *Strand*: `strand/task-v2-core-runtime-tls`
+  - *Lock*: `rhizo lock file:src/anynng.nim 900 --fencing`
+  - *Provider*:
+    - `src/anynng/core/options.nim` (Strongly-typed `OptionDescriptor` & `OptionStore` across `Socket`, `Dialer`, `Listener`, `Pipe`, `Context` enforcing exact NNG error semantics: `NNG_EBADTYPE=30`, `NNG_EREADONLY=24`, `NNG_EWRITEONLY=25`, `NNG_ENOTSUP=9`, `NNG_EINVAL=3`)
+    - `src/anynng/core/tls.nim` (`TlsConfig` matching `nng_tls_config`: `TlsMode`, `TlsAuthMode`, `TlsVersion`, `ownCert`, `caChain`, `certKeyFile`, `caFile`, `serverName` SNI)
+    - `src/anynng/transports/native_tls.nim` (`tls+tcp://`, `tls+tcp4://`, `tls+tcp6://` async OpenSSL 3 dialer & listener + `NNG_OPT_TLS_VERIFIED` and `NNG_OPT_TLS_PEER_CN`)
+    - Upgrade `src/anynng/transports/native_{tcp,ipc,udp,ws}.nim` & `src/anynng.nim`:
+      - Add `wss://` (`wss4://`, `wss6://`) support to `native_ws.nim` over `TlsConfig`
+      - Two-step `Dialer` (`newDialer`, `setOpt`/`getOpt`, `start`, `close`, background auto-reconnect with `reconnect-time-min`/`reconnect-time-max` and `NNG_FLAG_NONBLOCK`) and `Listener` (`newListener`, `setOpt`/`getOpt`, `start`, `close`, ephemeral port `0` binding with `getsockname()` populating `NNG_OPT_TCP_BOUND_PORT` / `NNG_OPT_LOCADDR`)
+      - First-class `Pipe` introspection (`id`, `socket`, `dialer`, `listener`, `close`, `msg.pipeId`) and `pipeNotify` (`NNG_PIPE_EV_ADD_PRE`, `ADD_POST`, `REM_POST` where closing a pipe in `ADD_PRE` rejects the connection)
+      - Concurrent `Context` (`openContext`, `ctx.send`, `ctx.recv`, `ctx.setOpt`, `ctx.getOpt`, `ctx.close`) on `REQ0`, `REP0`, `SURVEYOR0`, `RESPONDENT0`, `SUB0`
+      - Protocol timers (`req:resend-time`, `surveyor:survey-time`), bounded `SENDBUF`/`RECVBUF` backpressure, and raw-mode `device(s1, s2)` forwarder
+  - *Consumer / Call-Site*:
+    - Wire into `src/anynng.nim` (`dial`, `listen`, `newDialer`, `newListener`, `openContext`, `pipeNotify`, `device`, typed `getOpt`/`setOpt`)
+    - `tests/t_v2_runtime_tls.nim` (Comprehensive test suite for typed options + negative controls, two-step `Dialer`/`Listener` port-0 binding & auto-reconnect, `pipeNotify` `ADD_PRE` rejection, `Context` multiplexing, `REQ0` resend & `SURVEYOR0` survey timers, `device(s1, s2)` raw proxy, and native `tls+tcp://` + `wss://` TLS handshakes)
+    - Expand `tests/t_interop_libnng.nim` with live `tls+tcp://` and `wss://` interoperability tests against Homebrew C `libnng` 1.12.4
+  - *Holistic Verification*: `nimble test` and `nim c -r -d:ssl -d:test_c_interop tests/t_interop_libnng.nim` pass 100%.
+  - *Weave*: `vine submit --author anynng-architect` -> Key 3 Audit by `anynng-auditor` -> `vine weave`.
+
+- [ ] **Task 3.2: JS (`nim js`) & WASM/TypeScript (`nimts` `ts/*`) Full Parity (`wss://`, `inproc://`, Options, `Context`, Timers, `pipeNotify`, Auto-Reconnect)** (`anynng-implementer`)
+  - *Dependency*: Season `v0.2.0` Phase 3 (`task-v2-dialectic-parity` — WOVEN `60f5c7f`)
+  - *Task ID*: `task-v2-js-wasm-parity`
+  - *Strand*: `strand/task-v2-js-wasm-parity`
+  - *Provider*:
+    - `src/anynng/transports/js_ws.nim` (Add `wss://` support, two-step `JsDialer` with auto-reconnect backoff, `pipeNotify` callbacks `onPipeAddPre`/`onPipeAddPost`/`onPipeRemPost`, `Context` multiplexing `openContext()`, `REQ0` resend timer, `SURVEYOR0` survey timer, `PAIR1` `polyamorous` & `maxTtl` options, and `raw` mode support)
+    - `src/anynng/wasm_bridge.nim`, `ts/types.ts`, `ts/runtime.ts`, `ts/index.ts` (Expose full option getters/setters `maxTtl`, `polyamorous`, `resendTime`, `surveyTime`, `recvMaxSize`, `raw`, `Context` class via `socket.openContext()`, `pipeNotify` hooks, `Dialer` auto-reconnect, and `wss://` support in TypeScript)
+  - *Consumer / Call-Site*:
+    - Expand `tests/t_js_ws.nim` (`nim js -d:nodejs -r`) and `tests/test_ts_bridge.ts` (Vitest) with `wss://`, `Context` concurrent multiplexing, `pipeNotify` `ADD_PRE` rejection, `REQ0` resend timer, `SURVEYOR0` deadline timer, `PAIR1` polyamorous/TTL options, and negative controls
+  - *Holistic Verification*: `nim js -d:nodejs -r tests/t_js_ws.nim` and `npx vitest run` pass 100%.
+  - *Weave*: `vine submit --author anynng-implementer` -> Key 3 Audit by `anynng-auditor` -> `vine weave`.
+
+---
+
+### Season `v0.2.0` — Wave 4: `<nng/nng.h>` C-ABI Library (`c_api.nim`) & Upstream `nanomsg/nng` v1.12.4 `nuts.h` Specification Test Runner
+
+- [ ] **Task 4.1: `<nng/nng.h>` C-ABI Export Layer (`src/anynng/c_api.nim`), `tests/upstream_shim/nuts.h`, and Automated Upstream `nanomsg/nng` v1.12.4 Spec Test Suite (`just test-nng-spec`)** (`anynng-architect`)
+  - *Dependency*: Task 3.1 (`task-v2-core-runtime-tls`) and Task 3.2 (`task-v2-js-wasm-parity`)
+  - *Task ID*: `task-v2-upstream-nuts-spec`
+  - *Strand*: `strand/task-v2-upstream-nuts-spec`
+  - *Lock*: `rhizo lock file:justfile 600 --fencing`
+  - *Provider*:
+    - `src/anynng/c_api.nim` (`{.exportc, dynlib, cdecl.}` implementation of `<nng/nng.h>`, protocol openers `nng_*_open` / `nng_*_open_raw` / `nng_pair1_open_poly`, `nng_listen*`, `nng_dial*`, `nng_send*`, `nng_recv*`, `nng_msg_*`, `nng_aio_*`, `nng_ctx_*`, `nng_pipe_*`, `nng_socket_get/set*`, `nng_dialer_get/set*`, `nng_listener_get/set*`, `nng_device`, `nng_tls_config_*`, `nng_strerror`, `nng_clock`, `nng_msleep`, `nng_random`, `nng_thread_*`, `nng_mtx_*`, `nng_cv_*`)
+    - `tests/upstream_shim/nuts.h` (Bridges unmodified upstream `nanomsg/nng` v1.12.4 `*_test.c` test files and `acutest.h` to `libanynng`)
+    - `scripts/run_upstream_nng_tests.sh` (Shallow-clones `https://github.com/nanomsg/nng.git` tag `v1.12.4` into git-ignored `.cache/nng-upstream`, builds `libanynng` from `src/anynng/c_api.nim`, compiles and executes upstream's C specification test suites `pair0_test.c`, `pair1_test.c`, `req_test.c`, `rep_test.c`, `pub_test.c`, `sub_test.c`, `push_test.c`, `pull_test.c`, `survey_test.c`, `respond_test.c`, `bus_test.c`, `inproc_test.c`, `tcp_test.c`, `ipc_test.c`, `ws_test.c` directly against `anynng` without copying a single upstream test file into the repo)
+  - *Consumer / Call-Site*:
+    - Wire `test-nng-spec` into `justfile` (`just test-nng-spec` and `just test`) and `anynng.nimble`
+  - *Holistic Verification*: `just test-nng-spec` and `just test` execute all upstream `nanomsg/nng` v1.12.4 C test suites against `anynng` with 0 failures.
+  - *Weave*: `vine submit --author anynng-architect` -> Key 3 Audit by `anynng-auditor` -> `vine weave`.
+
+---
+
 ## 5. Dynamic Progress Tracking & Emergent Design Addendum Protocol
 - As each task is woven via `vine weave`, `@anynng-orchestrator` updates `- [ ]` to `- [x]` in `implementation_plan.md`.
 - Any deviation from `design.md` requires submitting `docs/addenda/addendum_<topic>.md` to `@anynng-orchestrator` before coding.
