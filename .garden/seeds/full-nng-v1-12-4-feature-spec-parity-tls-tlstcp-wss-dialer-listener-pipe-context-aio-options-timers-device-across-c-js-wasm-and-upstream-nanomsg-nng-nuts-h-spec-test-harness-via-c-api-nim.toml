@@ -1,0 +1,8 @@
+id = "full-nng-v1-12-4-feature-spec-parity-tls-tlstcp-wss-dialer-listener-pipe-context-aio-options-timers-device-across-c-js-wasm-and-upstream-nanomsg-nng-nuts-h-spec-test-harness-via-c-api-nim"
+title = "Full NNG v1.12.4 Feature & Spec Parity (TLS tls+tcp:// & wss://, Dialer/Listener/Pipe/Context/Aio/Options/Timers/Device across C/JS/WASM, and Upstream nanomsg/nng nuts.h Spec Test Harness via c_api.nim)"
+season = "v0.2.0"
+sunlight = "blazing"
+tags = ["parity", "tls", "wss", "c-abi", "nuts", "spec-tests", "js", "wasm"]
+status = "SOWN"
+created_at = "2026-10-31T04:27:13Z"
+updated_at = "2026-10-31T04:27:13Z"
