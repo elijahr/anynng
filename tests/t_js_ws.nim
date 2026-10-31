@@ -20,14 +20,17 @@ else:
       result[i] = byte(s[i])
 
   proc startMockServer(): Future[JsObject] =
-    let p = newPromise[JsObject](proc(resolve: proc(val: JsObject)) =
-      {.emit: """
+    let p = newPromise[JsObject](
+      proc(resolve: proc(val: JsObject)) =
+        {.
+          emit: """
       import('./helpers/mock_ws_server.mjs').then(mod => {
         return mod.createSpWsServer(0);
       }).then(server => {
         `resolve`(`server`);
       });
-      """.}
+      """
+        .}
     )
     return p
 

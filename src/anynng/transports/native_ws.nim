@@ -4,6 +4,7 @@
 when not defined(js):
   import std/[asyncnet, asyncdispatch, base64, net, random, strutils]
   import ../core/types
+  import ../core/tls
   import ../core/sha1
   import ../core/framing/ws_framing
 
@@ -12,6 +13,8 @@ when not defined(js):
     closed*: bool
     url*: string
     proto*: SpProto
+    boundPort*: int
+    tlsCfg*: TlsConfig
 
   proc packWsFrame(opcode: byte, payload: openArray[byte], mask: bool): seq[byte] =
     result = @[]
@@ -166,8 +169,14 @@ when not defined(js):
       proto: SpProto,
       onFrame: proc(pid: PipeId, frame: seq[byte]) {.closure.},
       onClose: proc(pid: PipeId) {.closure.},
+      tlsCfg: TlsConfig = nil,
   ): Future[Pipe] {.async.} =
     let sock = newAsyncSocket(buffered = false)
+    let isSecure = tlsCfg != nil
+    if isSecure:
+      let sslCtx = tlsCfg.toSslContext()
+      sslCtx.wrapSocket(sock)
+
     await sock.connect(host, Port(port))
 
     # Generate random 16-byte nonce
@@ -244,6 +253,7 @@ when not defined(js):
       onPipeAdded: proc(pipe: Pipe) {.closure.},
       onFrame: proc(pid: PipeId, frame: seq[byte]) {.closure.},
       onClose: proc(pid: PipeId) {.closure.},
+      tlsCfg: TlsConfig = nil,
   ): Future[WsListener] {.async.} =
     let serverSock = newAsyncSocket(buffered = false)
     serverSock.setSockOpt(OptReuseAddr, true)
@@ -251,20 +261,35 @@ when not defined(js):
     serverSock.bindAddr(Port(port), host)
     serverSock.listen(128)
 
+    let (_, allocatedPort) = serverSock.getLocalAddr()
+    let scheme = if tlsCfg != nil: "wss" else: "ws"
+
     let listener = WsListener(
       serverSock: serverSock,
       closed: false,
-      url: "ws://" & host & ":" & $port & (if path.len == 0: "/" else: path),
+      url:
+        scheme & "://" & host & ":" & $allocatedPort & (
+          if path.len == 0: "/" else: path
+        ),
       proto: proto,
+      boundPort: int(allocatedPort),
+      tlsCfg: tlsCfg,
     )
 
     # CRIT-02: Listener matches SELF protocol name
     let expectedSubproto = listenerSubprotocol(proto)
 
     proc acceptLoop() {.async.} =
+      let sslCtx =
+        if tlsCfg != nil:
+          tlsCfg.toSslContext()
+        else:
+          nil
       while not listener.closed and not serverSock.isClosed:
         try:
           let clientSock = await serverSock.accept()
+          if sslCtx != nil:
+            sslCtx.wrapConnectedSocket(clientSock, handshake = handshakeAsServer)
           let lines = await readHttpHeaders(clientSock)
           if lines.len == 0:
             clientSock.close()

@@ -8,6 +8,7 @@ type
     tranInproc
     tranIpc
     tranTcp
+    tranTlsTcp
     tranUdp
     tranWs
 
@@ -33,11 +34,32 @@ proc parseSpUrl*(rawUrl: string): ParsedUrl =
   of "inproc":
     result.kind = tranInproc
     result.path = rest
-  of "ipc":
+  of "ipc", "unix":
     result.kind = tranIpc
     result.path = rest
   of "tcp", "tcp4", "tcp6":
     result.kind = tranTcp
+    let slashIdx = rest.find('/')
+    let hostPort =
+      if slashIdx >= 0:
+        rest[0 ..< slashIdx]
+      else:
+        rest
+    result.path =
+      if slashIdx >= 0:
+        rest[slashIdx .. ^1]
+      else:
+        ""
+    let lastColon = hostPort.rfind(':')
+    if lastColon >= 0:
+      result.host = hostPort[0 ..< lastColon]
+      result.port = parseInt(hostPort[lastColon + 1 .. ^1])
+    else:
+      result.host = hostPort
+      result.port = 0
+  of "tls+tcp", "tls+tcp4", "tls+tcp6":
+    result.kind = tranTlsTcp
+    result.isSecure = true
     let slashIdx = rest.find('/')
     let hostPort =
       if slashIdx >= 0:
@@ -65,9 +87,9 @@ proc parseSpUrl*(rawUrl: string): ParsedUrl =
     else:
       result.host = rest
       result.port = 0
-  of "ws", "wss":
+  of "ws", "ws4", "ws6", "wss", "wss4", "wss6":
     result.kind = tranWs
-    result.isSecure = (result.scheme == "wss")
+    result.isSecure = result.scheme.startsWith("wss")
     let slashIdx = rest.find('/')
     let hostPort =
       if slashIdx >= 0:

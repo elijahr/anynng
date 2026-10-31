@@ -11,6 +11,7 @@ when not defined(js):
     closed*: bool
     url*: string
     proto*: SpProto
+    boundPort*: int
 
   proc readStreamLoop(
       sock: AsyncSocket,
@@ -106,11 +107,14 @@ when not defined(js):
     serverSock.bindAddr(Port(port), host)
     serverSock.listen(128)
 
+    let (_, allocatedPort) = serverSock.getLocalAddr()
+
     let listener = TcpListener(
       serverSock: serverSock,
       closed: false,
-      url: "tcp://" & host & ":" & $port,
+      url: "tcp://" & host & ":" & $allocatedPort,
       proto: proto,
+      boundPort: int(allocatedPort),
     )
 
     proc acceptLoop() {.async.} =

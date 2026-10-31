@@ -67,7 +67,8 @@ proc anynng_wasm_version*(): int32 =
 
 proc anynng_alloc*(size: int32): pointer =
   ## Allocates linear memory buffer for zero-copy data passing from JS/TS.
-  if size <= 0: return nil
+  if size <= 0:
+    return nil
   alloc0(size)
 
 proc anynng_free*(p: pointer) =
@@ -75,7 +76,9 @@ proc anynng_free*(p: pointer) =
   if p != nil:
     dealloc(p)
 
-proc anynng_ws_dialer_subprotocol*(proto: int32, outBuf: cstring, outCap: int32): int32 =
+proc anynng_ws_dialer_subprotocol*(
+    proto: int32, outBuf: cstring, outCap: int32
+): int32 =
   ## Returns dialer Sec-WebSocket-Protocol name into outBuf.
   let p = toSpProto(proto)
   let sub = dialerSubprotocol(p)
@@ -84,7 +87,9 @@ proc anynng_ws_dialer_subprotocol*(proto: int32, outBuf: cstring, outCap: int32)
     return int32(sub.len)
   return int32(sub.len)
 
-proc anynng_ws_listener_subprotocol*(proto: int32, outBuf: cstring, outCap: int32): int32 =
+proc anynng_ws_listener_subprotocol*(
+    proto: int32, outBuf: cstring, outCap: int32
+): int32 =
   ## Returns listener Sec-WebSocket-Protocol name into outBuf.
   let p = toSpProto(proto)
   let sub = listenerSubprotocol(p)
@@ -98,13 +103,11 @@ proc anynng_ws_listener_subprotocol*(proto: int32, outBuf: cstring, outCap: int3
 # ----------------------------------------------------------------------
 
 proc anynng_req0_encode*(
-    reqId: uint32,
-    bodyPtr: ptr byte,
-    bodyLen: int32,
-    outPtr: ptr byte
+    reqId: uint32, bodyPtr: ptr byte, bodyLen: int32, outPtr: ptr byte
 ): int32 =
   ## Encodes REQ0 message: prepends 4-byte BE (reqId | 0x80000000) header.
-  if outPtr == nil: return -1
+  if outPtr == nil:
+    return -1
   let cookedReqId = reqId or 0x80000000'u32
   writeBe32(outPtr, 0, cookedReqId)
   if bodyLen > 0 and bodyPtr != nil:
@@ -117,10 +120,11 @@ proc anynng_req0_decode*(
     frameLen: int32,
     outReqId: ptr uint32,
     outBodyOffset: ptr int32,
-    outBodyLen: ptr int32
+    outBodyLen: ptr int32,
 ): int32 =
   ## Decodes REQ0/REP0 frame: extracts 31-bit request ID and body offset/len.
-  if framePtr == nil or frameLen < 4: return -1
+  if framePtr == nil or frameLen < 4:
+    return -1
   let h = readBe32(framePtr, 0)
   if outReqId != nil:
     outReqId[] = h and 0x7fffffff'u32
@@ -131,13 +135,11 @@ proc anynng_req0_decode*(
   return 0
 
 proc anynng_rep0_encode*(
-    reqId: uint32,
-    bodyPtr: ptr byte,
-    bodyLen: int32,
-    outPtr: ptr byte
+    reqId: uint32, bodyPtr: ptr byte, bodyLen: int32, outPtr: ptr byte
 ): int32 =
   ## Encodes REP0 reply message: restores 4-byte BE (reqId | 0x80000000) backtrace.
-  if outPtr == nil: return -1
+  if outPtr == nil:
+    return -1
   let cookedReqId = reqId or 0x80000000'u32
   writeBe32(outPtr, 0, cookedReqId)
   if bodyLen > 0 and bodyPtr != nil:
@@ -150,13 +152,11 @@ proc anynng_rep0_encode*(
 # ----------------------------------------------------------------------
 
 proc anynng_pair1_encode*(
-    hops: uint32,
-    bodyPtr: ptr byte,
-    bodyLen: int32,
-    outPtr: ptr byte
+    hops: uint32, bodyPtr: ptr byte, bodyLen: int32, outPtr: ptr byte
 ): int32 =
   ## Encodes PAIR1 frame: prepends 4-byte BE hop count.
-  if outPtr == nil: return -1
+  if outPtr == nil:
+    return -1
   writeBe32(outPtr, 0, hops)
   if bodyLen > 0 and bodyPtr != nil:
     let dest = cast[ptr byte](cast[uint](outPtr) + 4)
@@ -168,10 +168,11 @@ proc anynng_pair1_decode*(
     frameLen: int32,
     outHops: ptr uint32,
     outBodyOffset: ptr int32,
-    outBodyLen: ptr int32
+    outBodyLen: ptr int32,
 ): int32 =
   ## Decodes PAIR1 frame: extracts hop count and body.
-  if framePtr == nil or frameLen < 4: return -1
+  if framePtr == nil or frameLen < 4:
+    return -1
   let hops = readBe32(framePtr, 0)
   if outHops != nil:
     outHops[] = hops
@@ -186,14 +187,13 @@ proc anynng_pair1_decode*(
 # ----------------------------------------------------------------------
 
 proc anynng_sub0_matches*(
-    topicPtr: ptr byte,
-    topicLen: int32,
-    msgPtr: ptr byte,
-    msgLen: int32
+    topicPtr: ptr byte, topicLen: int32, msgPtr: ptr byte, msgLen: int32
 ): int32 =
   ## Returns 1 if msg begins with topic prefix; 0 otherwise. Empty topic matches all.
-  if topicLen <= 0: return 1
-  if msgLen < topicLen or msgPtr == nil or topicPtr == nil: return 0
+  if topicLen <= 0:
+    return 1
+  if msgLen < topicLen or msgPtr == nil or topicPtr == nil:
+    return 0
   if equalMem(topicPtr, msgPtr, topicLen):
     return 1
   return 0
@@ -203,13 +203,11 @@ proc anynng_sub0_matches*(
 # ----------------------------------------------------------------------
 
 proc anynng_survey0_encode*(
-    surveyId: uint32,
-    bodyPtr: ptr byte,
-    bodyLen: int32,
-    outPtr: ptr byte
+    surveyId: uint32, bodyPtr: ptr byte, bodyLen: int32, outPtr: ptr byte
 ): int32 =
   ## Encodes SURVEYOR0 survey message: prepends 4-byte BE (surveyId | 0x80000000).
-  if outPtr == nil: return -1
+  if outPtr == nil:
+    return -1
   let cookedId = surveyId or 0x80000000'u32
   writeBe32(outPtr, 0, cookedId)
   if bodyLen > 0 and bodyPtr != nil:
@@ -222,10 +220,11 @@ proc anynng_survey0_decode*(
     frameLen: int32,
     outSurveyId: ptr uint32,
     outBodyOffset: ptr int32,
-    outBodyLen: ptr int32
+    outBodyLen: ptr int32,
 ): int32 =
   ## Decodes SURVEYOR0/RESPONDENT0 frame: extracts surveyId and body.
-  if framePtr == nil or frameLen < 4: return -1
+  if framePtr == nil or frameLen < 4:
+    return -1
   let h = readBe32(framePtr, 0)
   if outSurveyId != nil:
     outSurveyId[] = h and 0x7fffffff'u32
@@ -236,10 +235,7 @@ proc anynng_survey0_decode*(
   return 0
 
 proc anynng_respondent0_encode*(
-    surveyId: uint32,
-    bodyPtr: ptr byte,
-    bodyLen: int32,
-    outPtr: ptr byte
+    surveyId: uint32, bodyPtr: ptr byte, bodyLen: int32, outPtr: ptr byte
 ): int32 =
   ## Encodes RESPONDENT0 response: preserves surveyId header.
   anynng_survey0_encode(surveyId, bodyPtr, bodyLen, outPtr)
@@ -249,13 +245,11 @@ proc anynng_respondent0_encode*(
 # ----------------------------------------------------------------------
 
 proc anynng_bus0_encode*(
-    hops: uint32,
-    bodyPtr: ptr byte,
-    bodyLen: int32,
-    outPtr: ptr byte
+    hops: uint32, bodyPtr: ptr byte, bodyLen: int32, outPtr: ptr byte
 ): int32 =
   ## Encodes BUS0 frame: prepends 4-byte BE hop count.
-  if outPtr == nil: return -1
+  if outPtr == nil:
+    return -1
   writeBe32(outPtr, 0, hops)
   if bodyLen > 0 and bodyPtr != nil:
     let dest = cast[ptr byte](cast[uint](outPtr) + 4)
@@ -267,10 +261,11 @@ proc anynng_bus0_decode*(
     frameLen: int32,
     outHops: ptr uint32,
     outBodyOffset: ptr int32,
-    outBodyLen: ptr int32
+    outBodyLen: ptr int32,
 ): int32 =
   ## Decodes BUS0 frame: extracts hop count and body.
-  if framePtr == nil or frameLen < 4: return -1
+  if framePtr == nil or frameLen < 4:
+    return -1
   let hops = readBe32(framePtr, 0)
   if outHops != nil:
     outHops[] = hops
@@ -286,17 +281,21 @@ proc anynng_bus0_decode*(
 
 proc anynng_stream_encode_greeting*(proto: int32, outPtr: ptr byte): int32 =
   ## Writes 8-byte SP stream greeting into outPtr: \0 S P \0 [proto BE16] \0 \0
-  if outPtr == nil: return -1
+  if outPtr == nil:
+    return -1
   let p = toSpProto(proto)
   var g = encodeGreeting(p)
   copyMem(outPtr, addr g[0], 8)
   return 8
 
-proc anynng_stream_decode_greeting*(greetingPtr: ptr byte, outProto: ptr uint16): int32 =
+proc anynng_stream_decode_greeting*(
+    greetingPtr: ptr byte, outProto: ptr uint16
+): int32 =
   ## Decodes 8-byte SP stream greeting. Returns 0 on success, -1 on protocol error.
-  if greetingPtr == nil: return -1
+  if greetingPtr == nil:
+    return -1
   if pArr(greetingPtr)[0] != 0x00'u8 or pArr(greetingPtr)[1] != byte('S') or
-     pArr(greetingPtr)[2] != byte('P') or pArr(greetingPtr)[3] != 0x00'u8:
+      pArr(greetingPtr)[2] != byte('P') or pArr(greetingPtr)[3] != 0x00'u8:
     return -1
   let p = readBe16(greetingPtr, 4)
   if outProto != nil:
@@ -304,12 +303,11 @@ proc anynng_stream_decode_greeting*(greetingPtr: ptr byte, outProto: ptr uint16)
   return 0
 
 proc anynng_stream_encode_frame*(
-    bodyPtr: ptr byte,
-    bodyLen: int32,
-    outPtr: ptr byte
+    bodyPtr: ptr byte, bodyLen: int32, outPtr: ptr byte
 ): int32 =
   ## Encodes stream frame with 8-byte BE length prefix.
-  if outPtr == nil: return -1
+  if outPtr == nil:
+    return -1
   writeBe64(outPtr, 0, uint64(bodyLen))
   if bodyLen > 0 and bodyPtr != nil:
     let dest = cast[ptr byte](cast[uint](outPtr) + 8)
@@ -318,7 +316,8 @@ proc anynng_stream_encode_frame*(
 
 proc anynng_stream_decode_frame_len*(headerPtr: ptr byte, outLen: ptr uint64): int32 =
   ## Decodes 8-byte BE frame length from headerPtr.
-  if headerPtr == nil: return -1
+  if headerPtr == nil:
+    return -1
   let l = readBe64(headerPtr, 0)
   if outLen != nil:
     outLen[] = l
@@ -329,14 +328,11 @@ proc anynng_stream_decode_frame_len*(headerPtr: ptr byte, outLen: ptr uint64): i
 # ----------------------------------------------------------------------
 
 proc anynng_udp_encode_header*(
-    packetType: uint8,
-    hops: uint8,
-    flowId: uint16,
-    seqNum: uint32,
-    outPtr: ptr byte
+    packetType: uint8, hops: uint8, flowId: uint16, seqNum: uint32, outPtr: ptr byte
 ): int32 =
   ## Encodes 8-byte UDP SP header.
-  if outPtr == nil: return -1
+  if outPtr == nil:
+    return -1
   pArr(outPtr)[0] = packetType
   pArr(outPtr)[1] = hops
   writeBe16(outPtr, 2, flowId)
@@ -348,12 +344,15 @@ proc anynng_udp_decode_header*(
     outType: ptr uint8,
     outHops: ptr uint8,
     outFlow: ptr uint16,
-    outSeq: ptr uint32
+    outSeq: ptr uint32,
 ): int32 =
   ## Decodes 8-byte UDP SP header.
-  if headerPtr == nil: return -1
-  if outType != nil: outType[] = pArr(headerPtr)[0]
-  if outHops != nil: outHops[] = pArr(headerPtr)[1]
+  if headerPtr == nil:
+    return -1
+  if outType != nil:
+    outType[] = pArr(headerPtr)[0]
+  if outHops != nil:
+    outHops[] = pArr(headerPtr)[1]
   if outFlow != nil:
     outFlow[] = readBe16(headerPtr, 2)
   if outSeq != nil:

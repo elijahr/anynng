@@ -158,12 +158,14 @@ type
   Rep0Engine* = object
     pipes*: seq[PipeId]
     contexts*: Table[uint32, RepContextState]
+    reqStack*: seq[RepContextState]
     maxTtl*: uint32
     raw*: bool
 
 func initRep0Engine*(raw: bool = false, maxTtl: uint32 = DefaultMaxTtl): Rep0Engine =
   result.pipes = @[]
   result.contexts = initTable[uint32, RepContextState]()
+  result.reqStack = @[]
   result.maxTtl = maxTtl
   result.raw = raw
 
@@ -209,34 +211,50 @@ proc step*(eng: var Rep0Engine, ev: EngineEvent): seq[EngineAction] =
     let header = ev.rawFrame[0 ..< offset]
     let body = ev.rawFrame[offset .. ^1]
 
-    # Save context state for reply
-    eng.contexts[ev.ctxId] = RepContextState(pipeId: ev.pipeId, header: header)
+    let repState = RepContextState(pipeId: ev.pipeId, header: header)
+    if ev.ctxId != 0:
+      eng.contexts[ev.ctxId] = repState
+    else:
+      eng.reqStack.add(repState)
 
     var msg: SpMsg
-    if eng.raw:
-      msg.header = header
-      msg.body = body
-    else:
-      msg.body = body
+    msg.header = header
+    msg.body = body
 
     result.add(
       EngineAction(kind: actDeliverRecv, ctxId: ev.ctxId, msg: msg, pipeId: ev.pipeId)
     )
   of evUserSend:
-    var targetCtxId = ev.ctxId
-    if targetCtxId notin eng.contexts:
-      if eng.contexts.len > 0:
-        for k in eng.contexts.keys:
-          targetCtxId = k
-          break
-      else:
-        result.add(
-          EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrClosed)
-        )
-        return
+    var state: RepContextState
+    var found = false
 
-    let state = eng.contexts[targetCtxId]
-    eng.contexts.del(targetCtxId)
+    if ev.ctxId != 0 and ev.ctxId in eng.contexts:
+      state = eng.contexts[ev.ctxId]
+      eng.contexts.del(ev.ctxId)
+      found = true
+    elif eng.reqStack.len > 0:
+      var foundIdx = -1
+      if ev.msg.header.len >= 4:
+        for idx in countdown(eng.reqStack.len - 1, 0):
+          if eng.reqStack[idx].header == ev.msg.header:
+            foundIdx = idx
+            break
+      if foundIdx >= 0:
+        state = eng.reqStack[foundIdx]
+        eng.reqStack.delete(foundIdx)
+      else:
+        state = eng.reqStack.pop()
+      found = true
+    elif eng.contexts.len > 0:
+      for k in eng.contexts.keys:
+        state = eng.contexts[k]
+        eng.contexts.del(k)
+        found = true
+        break
+
+    if not found:
+      result.add(EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrClosed))
+      return
 
     var frame: seq[byte]
     if eng.raw:

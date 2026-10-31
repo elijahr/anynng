@@ -72,11 +72,25 @@ type
 
   PipeId* = uint64
 
+  PipeEvent* = enum
+    pipeEvAddPre = 0
+    pipeEvAddPost = 1
+    pipeEvRemPost = 2
+
   Pipe* = ref object
     pipeId*: PipeId
     proto*: SpProto
     sendImpl*: proc(data: openArray[byte]) {.closure.}
     closeImpl*: proc() {.closure.}
+    sockPtr*: pointer
+    dialerPtr*: pointer
+    listenerPtr*: pointer
+    tlsVerified*: bool
+    tlsPeerCn*: string
+    locAddr*: string
+    remAddr*: string
+
+  PipeNotifyCb* = proc(pipe: Pipe, ev: PipeEvent) {.closure.}
 
 proc send*(p: Pipe, data: openArray[byte]) =
   if p != nil and p.sendImpl != nil:
@@ -92,7 +106,19 @@ proc newPipe*(
     sendCb: proc(data: openArray[byte]) {.closure.},
     closeCb: proc() {.closure.},
 ): Pipe =
-  Pipe(pipeId: pipeId, proto: proto, sendImpl: sendCb, closeImpl: closeCb)
+  Pipe(
+    pipeId: pipeId,
+    proto: proto,
+    sendImpl: sendCb,
+    closeImpl: closeCb,
+    sockPtr: nil,
+    dialerPtr: nil,
+    listenerPtr: nil,
+    tlsVerified: false,
+    tlsPeerCn: "",
+    locAddr: "",
+    remAddr: "",
+  )
 
 var gNextPipeId: PipeId = 1'u64
 
@@ -104,6 +130,7 @@ type
   SpMsg* = object
     header*: seq[byte]
     body*: seq[byte]
+    pipeId*: PipeId
 
   EngineEventKind* = enum
     evPipeAdded
@@ -136,9 +163,12 @@ type
     msg*: SpMsg
     err*: SpError
 
-func initSpMsg*(body: openArray[byte] = @[], header: openArray[byte] = @[]): SpMsg =
+func initSpMsg*(
+    body: openArray[byte] = @[], header: openArray[byte] = @[], pipeId: PipeId = 0
+): SpMsg =
   result.header = @header
   result.body = @body
+  result.pipeId = pipeId
 
 func `==`*(a, b: SpMsg): bool =
   a.header == b.header and a.body == b.body

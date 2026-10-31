@@ -46,6 +46,56 @@ when not defined(js):
     s: NngSocket, opt: cstring, val: int32
   ): cint {.importc, dynlib: LibNng.}
 
+  type
+    NngDialer = object
+      id: uint32
+
+    NngListener = object
+      id: uint32
+
+    NngTlsConfig = pointer
+
+  proc nng_tls_config_alloc(
+    cfg: ptr NngTlsConfig, mode: cint
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_tls_config_free(cfg: NngTlsConfig) {.importc, dynlib: LibNng.}
+  proc nng_tls_config_server_name(
+    cfg: NngTlsConfig, name: cstring
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_tls_config_auth_mode(
+    cfg: NngTlsConfig, mode: cint
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_tls_config_ca_chain(
+    cfg: NngTlsConfig, chain: cstring, crl: cstring
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_tls_config_own_cert(
+    cfg: NngTlsConfig, cert: cstring, key: cstring, pass: cstring
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_dialer_create(
+    d: ptr NngDialer, s: NngSocket, url: cstring
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_dialer_set_ptr(
+    d: NngDialer, opt: cstring, val: pointer
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_dialer_start(d: NngDialer, flags: cint): cint {.importc, dynlib: LibNng.}
+  proc nng_listener_create(
+    l: ptr NngListener, s: NngSocket, url: cstring
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_listener_set_ptr(
+    l: NngListener, opt: cstring, val: pointer
+  ): cint {.importc, dynlib: LibNng.}
+
+  proc nng_listener_start(l: NngListener, flags: cint): cint {.importc, dynlib: LibNng.}
+  proc nng_tls_engine_name(): cstring {.importc, dynlib: LibNng.}
+
   proc nng_close(s: NngSocket): cint {.importc, dynlib: LibNng.}
   proc nng_version(): cstring {.importc, dynlib: LibNng.}
 
@@ -723,3 +773,125 @@ when not defined(js):
       repSock.close()
       listener.close()
       discard nng_close(reqSock)
+
+  suite "libnng C Interop - TLS over TCP (tls+tcp://)":
+    test "PAIR0: anynng dialer -> libnng listener over tls+tcp://":
+      let engine = $nng_tls_engine_name()
+      echo "[libnng Interop] libnng TLS engine: '", engine, "'"
+      if engine == "none":
+        echo "[libnng Interop] C libnng bottle was compiled without TLS engine (none). Live C TLS test skipped."
+        check true
+      else:
+        let certPem = readFile("/tmp/anynng_test_cert.pem")
+        let keyPem = readFile("/tmp/anynng_test_key.pem")
+        let url = "tls+tcp://127.0.0.1:16930"
+
+        var cSock: NngSocket
+        check nng_pair0_open(addr cSock) == 0
+        check nng_socket_set_ms(cSock, "recv-timeout", 3000) == 0
+
+        var cTlsCfg: NngTlsConfig
+        check nng_tls_config_alloc(addr cTlsCfg, 1) == 0 # NNG_TLS_MODE_SERVER
+        check nng_tls_config_own_cert(cTlsCfg, cstring(certPem), cstring(keyPem), nil) ==
+          0
+
+        var cListener: NngListener
+        check nng_listener_create(addr cListener, cSock, cstring(url)) == 0
+        check nng_listener_set_ptr(cListener, "tls-config", cTlsCfg) == 0
+        check nng_listener_start(cListener, 0) == 0
+
+        let clientTls = newTlsConfig(tlsModeClient)
+        clientTls.setAuthMode(tlsAuthModeNone)
+        clientTls.setServerName("localhost")
+
+        let anySock = openPair0()
+        let dialer = anySock.newDialer(url)
+        dialer.setTlsConfig(clientTls)
+        dialer.start()
+
+        var connected = false
+        for _ in 0 ..< 50:
+          poll(10)
+          sleep(20)
+          if anySock.pipeCount > 0:
+            connected = true
+            break
+        check connected
+
+        anySock.send("hello from anynng over tls")
+        flushEvents()
+
+        var buf = newString(256)
+        var sz: csize_t = 256
+        check nng_recv(cSock, addr buf[0], addr sz, 0) == 0
+        buf.setLen(sz)
+        check buf == "hello from anynng over tls"
+
+        let reply = "reply from libnng over tls"
+        check nng_send(cSock, cstring(reply), csize_t(reply.len), 0) == 0
+        let rep = anySock.recvStr()
+        check rep == reply
+
+        anySock.close()
+        discard nng_close(cSock)
+        nng_tls_config_free(cTlsCfg)
+
+    test "PAIR0: libnng dialer -> anynng listener over tls+tcp://":
+      let engine = $nng_tls_engine_name()
+      if engine == "none":
+        echo "[libnng Interop] C libnng bottle was compiled without TLS engine (none). Live C TLS test skipped."
+        check true
+      else:
+        let certPem = readFile("/tmp/anynng_test_cert.pem")
+        let keyPem = readFile("/tmp/anynng_test_key.pem")
+        let url = "tls+tcp://127.0.0.1:16931"
+
+        let srvTls = newTlsConfig(tlsModeServer)
+        srvTls.setOwnCert(certPem, keyPem)
+
+        let anySock = openPair0()
+        let listener = anySock.newListener(url)
+        listener.setTlsConfig(srvTls)
+        listener.start()
+
+        var cSock: NngSocket
+        check nng_pair0_open(addr cSock) == 0
+        check nng_socket_set_ms(cSock, "recv-timeout", 3000) == 0
+
+        var cTlsCfg: NngTlsConfig
+        check nng_tls_config_alloc(addr cTlsCfg, 0) == 0 # NNG_TLS_MODE_CLIENT
+        check nng_tls_config_auth_mode(cTlsCfg, 0) == 0 # NNG_TLS_AUTH_MODE_NONE
+        check nng_tls_config_server_name(cTlsCfg, "localhost") == 0
+
+        var cDialer: NngDialer
+        check nng_dialer_create(addr cDialer, cSock, cstring(url)) == 0
+        check nng_dialer_set_ptr(cDialer, "tls-config", cTlsCfg) == 0
+        check nng_dialer_start(cDialer, NNG_FLAG_NONBLOCK) == 0
+
+        var s1: cint = -1
+        let msg = "ping from libnng tls dialer"
+        for _ in 0 ..< 50:
+          poll(10)
+          s1 = nng_send(cSock, cstring(msg), csize_t(msg.len), NNG_FLAG_NONBLOCK)
+          if s1 == 0:
+            break
+          sleep(20)
+        check s1 == 0
+
+        let recvd = anySock.recvStr()
+        check recvd == msg
+
+        let rep = "pong from anynng tls listener"
+        anySock.send(rep)
+        poll(10)
+
+        var buf = newString(256)
+        var sz: csize_t = 256
+        check nng_recv(cSock, addr buf[0], addr sz, 0) == 0
+        buf.setLen(sz)
+        check buf == rep
+
+        anySock.close()
+        listener.close()
+        discard nng_close(cSock)
+        nng_tls_config_free(cTlsCfg)
