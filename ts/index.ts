@@ -7,12 +7,16 @@
 export * from "./types.js";
 export * from "./runtime.js";
 import { AnynngBridge } from "./runtime.js";
-import type {
-  SocketOptions,
-  SpProtoName,
-  PipeNotifyHook,
-  ContextOptions,
-  DialerOptions,
+import {
+  EngineEventKind,
+  EngineActionKind,
+  SP_PROTO_IDS,
+  type SocketOptions,
+  type SpProtoName,
+  type PipeNotifyHook,
+  type ContextOptions,
+  type DialerOptions,
+  type EngineAction,
 } from "./types.js";
 
 let sharedBridgePromise: Promise<AnynngBridge> | null = null;
@@ -200,11 +204,13 @@ export class Dialer {
 export abstract class BaseSocket {
   protected ws?: WebSocket;
   protected bridge?: AnynngBridge;
+  protected engineHandle = 0;
   protected recvQueue: Uint8Array[] = [];
   protected recvWaiters: Waiter[] = [];
   protected isClosed = false;
   protected pipeNotifyHook?: PipeNotifyHook;
   protected currentPipeId = 1;
+  protected currentPipeIdVal = 0;
   protected contexts = new Map<number, Context>();
   protected nextCtxId = 2;
   protected activeDialers: Dialer[] = [];
@@ -237,6 +243,11 @@ export abstract class BaseSocket {
 
   setOpt(name: string, val: unknown): void {
     this.options.set(name, val);
+    if (this.bridge && this.engineHandle !== 0) {
+      if (typeof val === "number" || typeof val === "boolean") {
+        this.bridge.engineSetOpt(this.engineHandle, name, val);
+      }
+    }
   }
 
   getOpt(name: string): unknown {
@@ -252,6 +263,14 @@ export abstract class BaseSocket {
 
   closeContext(ctxId: number): void {
     this.contexts.delete(ctxId);
+    if (this.bridge && this.engineHandle !== 0) {
+      this.bridge.engineStep(
+        this.engineHandle,
+        EngineEventKind.evUserCancel,
+        0,
+        ctxId,
+      );
+    }
   }
 
   newDialer(url?: string, opts?: DialerOptions): Dialer {
@@ -267,6 +286,27 @@ export abstract class BaseSocket {
     return this.bridge;
   }
 
+  async ensureEngine(): Promise<AnynngBridge> {
+    const bridge = await this.getBridge();
+    if (this.engineHandle === 0) {
+      const protoId = SP_PROTO_IDS[this.proto];
+      const raw = (this.getOpt("raw") as boolean) ?? false;
+      const maxTtl = (this.getOpt("maxTtl") as number) ?? 8;
+      const poly = (this.getOpt("polyamorous") as boolean) ?? false;
+      const resendMs = (this.getOpt("resendTime") as number) ?? 0;
+      const surveyMs = (this.getOpt("surveyTime") as number) ?? 1000;
+      this.engineHandle = bridge.engineCreate(
+        protoId,
+        raw,
+        maxTtl,
+        poly,
+        resendMs,
+        surveyMs,
+      );
+    }
+    return bridge;
+  }
+
   async connectTo(targetUrl: string, bridge?: AnynngBridge): Promise<void> {
     this.url = targetUrl;
     await this.connect(bridge);
@@ -278,6 +318,7 @@ export abstract class BaseSocket {
     } else if (!this.bridge) {
       this.bridge = await getSharedBridge();
     }
+    await this.ensureEngine();
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return;
@@ -290,13 +331,13 @@ export abstract class BaseSocket {
       this.ws = ws;
 
       const pipeId = this.currentPipeId++;
+      this.currentPipeIdVal = pipeId;
 
       const onOpen = () => {
         cleanup();
         if (this.pipeNotifyHook) {
           const accepted = this.pipeNotifyHook(pipeId, "add_pre");
           if (accepted === false) {
-            // Rejected by ADD_PRE! Close immediately without accepting pipe
             ws.close();
             if (this.pipeNotifyHook) {
               this.pipeNotifyHook(pipeId, "rem_post");
@@ -305,6 +346,12 @@ export abstract class BaseSocket {
             return;
           }
         }
+        const actions = this.bridge!.engineStep(
+          this.engineHandle,
+          EngineEventKind.evPipeAdded,
+          pipeId,
+        );
+        this.dispatchActions(actions);
         if (this.pipeNotifyHook) {
           this.pipeNotifyHook(pipeId, "add_post");
         }
@@ -345,13 +392,37 @@ export abstract class BaseSocket {
 
         const maxSz = (this.getOpt("recvMaxSize") as number) ?? 1024 * 1024;
         if (data.length > maxSz) {
-          return; // Drop message exceeding bounded buffer limit
+          return;
         }
 
-        this.onRawMessage(data);
+        if (this.getOpt("raw") === true) {
+          this.onRawMessage(data);
+          return;
+        }
+
+        const actions = this.bridge!.engineStep(
+          this.engineHandle,
+          EngineEventKind.evPipeMessage,
+          this.currentPipeIdVal,
+          0,
+          data,
+          Date.now(),
+        );
+        this.dispatchActions(actions);
       });
 
       ws.addEventListener("close", () => {
+        if (this.bridge && this.engineHandle !== 0) {
+          const actions = this.bridge.engineStep(
+            this.engineHandle,
+            EngineEventKind.evPipeRemoved,
+            this.currentPipeIdVal,
+            0,
+            new Uint8Array(0),
+            Date.now(),
+          );
+          this.dispatchActions(actions);
+        }
         if (this.pipeNotifyHook) {
           this.pipeNotifyHook(pipeId, "rem_post");
         }
@@ -361,6 +432,40 @@ export abstract class BaseSocket {
         }
       });
     });
+  }
+
+  protected dispatchActions(actions: EngineAction[]): void {
+    for (const a of actions) {
+      switch (a.kind) {
+        case EngineActionKind.actSendPipe:
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(a.data);
+          }
+          break;
+        case EngineActionKind.actDeliverRecv:
+          if (a.ctxId > 1) {
+            const ctx = this.contexts.get(a.ctxId);
+            if (ctx) {
+              ctx.onMessage(a.data);
+              break;
+            }
+          }
+          this.onRawMessage(a.data);
+          break;
+        case EngineActionKind.actClosePipe:
+          if (this.ws) {
+            try {
+              this.ws.close();
+            } catch {
+              // ignore
+            }
+          }
+          break;
+        case EngineActionKind.actFinishSend:
+        case EngineActionKind.actFailContext:
+          break;
+      }
+    }
   }
 
   protected async ensureConnected(): Promise<void> {
@@ -421,13 +526,45 @@ export abstract class BaseSocket {
     });
   }
 
-  // Hook for context-specific send (overridden in Req0Socket, Rep0Socket, etc.)
-  async contextSend(_ctx: Context, payload: Uint8Array): Promise<void> {
-    await this.send(payload);
+  async contextSend(ctx: Context, payload: Uint8Array): Promise<void> {
+    await this.ensureConnected();
+    if (this.getOpt("raw") === true) {
+      await this.rawSend(payload);
+      return;
+    }
+    const bridge = await this.ensureEngine();
+    const actions = bridge.engineStep(
+      this.engineHandle,
+      EngineEventKind.evUserSend,
+      0,
+      ctx.id,
+      payload,
+      Date.now(),
+    );
+    this.dispatchActions(actions);
   }
 
-  abstract send(payload: Uint8Array): Promise<void>;
-  abstract recv(): Promise<Uint8Array>;
+  async send(payload: Uint8Array): Promise<void> {
+    await this.ensureConnected();
+    if (this.getOpt("raw") === true) {
+      await this.rawSend(payload);
+      return;
+    }
+    const bridge = await this.ensureEngine();
+    const actions = bridge.engineStep(
+      this.engineHandle,
+      EngineEventKind.evUserSend,
+      0,
+      1,
+      payload,
+      Date.now(),
+    );
+    this.dispatchActions(actions);
+  }
+
+  async recv(timeoutMs?: number): Promise<Uint8Array> {
+    return await this.rawRecv(timeoutMs);
+  }
 
   close(): void {
     this.isClosed = true;
@@ -441,6 +578,10 @@ export abstract class BaseSocket {
       ctx.close();
     }
     this.contexts.clear();
+    if (this.bridge && this.engineHandle !== 0) {
+      this.bridge.engineDestroy(this.engineHandle);
+      this.engineHandle = 0;
+    }
     if (this.ws) {
       try {
         this.ws.close();
@@ -460,14 +601,6 @@ export class Pair0Socket extends BaseSocket {
   constructor(url: string, opts?: SocketOptions) {
     super(url, opts, "pair0");
   }
-
-  async send(payload: Uint8Array): Promise<void> {
-    await this.rawSend(payload);
-  }
-
-  async recv(): Promise<Uint8Array> {
-    return await this.rawRecv();
-  }
 }
 
 export class Pair1Socket extends BaseSocket {
@@ -475,28 +608,26 @@ export class Pair1Socket extends BaseSocket {
     super(url, opts, "pair1");
   }
 
-  async send(payload: Uint8Array, hops = 0): Promise<void> {
+  override async send(payload: Uint8Array, hops = 0): Promise<void> {
     if (this.getOpt("raw") === true) {
       await this.rawSend(payload);
       return;
     }
-    const bridge = await this.getBridge();
-    const frame = bridge.pair1Encode(hops, payload);
-    await this.rawSend(frame);
-  }
-
-  async recv(): Promise<Uint8Array> {
-    const raw = await this.rawRecv();
-    if (this.getOpt("raw") === true) {
-      return raw;
+    await this.ensureConnected();
+    const bridge = await this.ensureEngine();
+    let data = payload;
+    if (hops > 0) {
+      data = bridge.pair1Encode(hops, payload);
     }
-    const bridge = await this.getBridge();
-    const decoded = bridge.pair1Decode(raw);
-    const maxTtl = (this.getOpt("maxTtl") as number) ?? 8;
-    if (decoded.hops > maxTtl) {
-      throw new Error(`PAIR1 TTL exceeded: hops=${decoded.hops} max=${maxTtl}`);
-    }
-    return decoded.body;
+    const actions = bridge.engineStep(
+      this.engineHandle,
+      EngineEventKind.evUserSend,
+      0,
+      1,
+      data,
+      Date.now(),
+    );
+    this.dispatchActions(actions);
   }
 }
 
@@ -505,195 +636,84 @@ export class Pub0Socket extends BaseSocket {
     super(url, opts, "pub0");
   }
 
-  async send(payload: Uint8Array): Promise<void> {
-    await this.rawSend(payload);
-  }
-
-  async recv(): Promise<Uint8Array> {
+  override async recv(): Promise<Uint8Array> {
     throw new Error("PUB0 cannot receive");
   }
 }
 
 export class Sub0Socket extends BaseSocket {
-  private subscriptions: Uint8Array[] = [];
+  private pendingSubscriptions: (string | Uint8Array)[] = [];
 
   constructor(url: string, opts?: SocketOptions) {
     super(url, opts, "sub0");
   }
 
+  override async connect(bridge?: AnynngBridge): Promise<void> {
+    await super.connect(bridge);
+    for (const topic of this.pendingSubscriptions) {
+      this.bridge!.engineSubscribe(this.engineHandle, topic);
+    }
+    this.pendingSubscriptions = [];
+  }
+
   subscribe(topic: string | Uint8Array): void {
-    const bytes =
-      typeof topic === "string" ? new TextEncoder().encode(topic) : topic;
-    this.subscriptions.push(bytes);
+    if (this.bridge && this.engineHandle !== 0) {
+      this.bridge.engineSubscribe(this.engineHandle, topic);
+    } else {
+      this.pendingSubscriptions.push(topic);
+    }
   }
 
   unsubscribe(topic: string | Uint8Array): void {
-    const bytes =
-      typeof topic === "string" ? new TextEncoder().encode(topic) : topic;
-    this.subscriptions = this.subscriptions.filter(
-      (sub) =>
-        sub.length !== bytes.length ||
-        !sub.every((val, idx) => val === bytes[idx]),
-    );
-  }
-
-  async send(_payload: Uint8Array): Promise<void> {
-    throw new Error("SUB0 cannot send");
-  }
-
-  async recv(): Promise<Uint8Array> {
-    const bridge = await this.getBridge();
-    while (true) {
-      const raw = await this.rawRecv();
-      if (this.subscriptions.length === 0) {
-        return raw;
-      }
-      for (const sub of this.subscriptions) {
-        if (bridge.sub0Matches(sub, raw)) {
-          return raw;
-        }
-      }
-      // Non-matching topic dropped, continue loop
+    if (this.bridge && this.engineHandle !== 0) {
+      this.bridge.engineUnsubscribe(this.engineHandle, topic);
     }
   }
-}
 
-interface PendingReq {
-  reqId: number;
-  ctx?: Context;
-  timer?: ReturnType<typeof setInterval>;
-  payload: Uint8Array;
+  override async send(_payload: Uint8Array): Promise<void> {
+    throw new Error("SUB0 cannot send");
+  }
 }
 
 export class Req0Socket extends BaseSocket {
-  private nextReqId = 1;
-  private pendingReqs = new Map<number, PendingReq>();
+  private resendTimer?: ReturnType<typeof setInterval>;
 
   constructor(url: string, opts?: SocketOptions) {
     super(url, opts, "req0");
   }
 
-  override async contextSend(ctx: Context, payload: Uint8Array): Promise<void> {
-    const bridge = await this.getBridge();
-    const reqId = this.nextReqId++ & 0x7fffffff;
-    const frame = bridge.req0Encode(reqId, payload);
-
-    const pending: PendingReq = { reqId, ctx, payload };
-    const resendMs =
-      ctx.opts?.resendTimeMs ?? (this.getOpt("resendTime") as number) ?? 0;
-    if (resendMs > 0) {
-      pending.timer = setInterval(async () => {
-        if (!this.isClosed && !ctx.isClosed && this.pendingReqs.has(reqId)) {
-          try {
-            await this.rawSend(frame);
-          } catch {
-            // Ignore send error on resend
-          }
-        }
-      }, resendMs);
-    }
-    this.pendingReqs.set(reqId, pending);
-    await this.rawSend(frame);
-  }
-
-  async send(payload: Uint8Array): Promise<void> {
-    if (this.getOpt("raw") === true) {
-      await this.rawSend(payload);
-      return;
-    }
-    const bridge = await this.getBridge();
-    const reqId = this.nextReqId++ & 0x7fffffff;
-    const frame = bridge.req0Encode(reqId, payload);
-
-    const pending: PendingReq = { reqId, payload };
+  override async connect(bridge?: AnynngBridge): Promise<void> {
+    await super.connect(bridge);
     const resendMs = (this.getOpt("resendTime") as number) ?? 0;
-    if (resendMs > 0) {
-      pending.timer = setInterval(async () => {
-        if (!this.isClosed && this.pendingReqs.has(reqId)) {
-          try {
-            await this.rawSend(frame);
-          } catch {
-            // Ignore send error on resend
-          }
+    if (resendMs > 0 && !this.resendTimer) {
+      this.resendTimer = setInterval(() => {
+        if (!this.isClosed && this.bridge && this.engineHandle !== 0) {
+          const acts = this.bridge.engineStep(
+            this.engineHandle,
+            EngineEventKind.evTimerTick,
+            0,
+            0,
+            new Uint8Array(0),
+            Date.now(),
+          );
+          this.dispatchActions(acts);
         }
-      }, resendMs);
+      }, Math.max(10, Math.floor(resendMs / 2)));
     }
-    this.pendingReqs.set(reqId, pending);
-    await this.rawSend(frame);
-  }
-
-  protected override onRawMessage(data: Uint8Array): void {
-    if (this.getOpt("raw") === true) {
-      super.onRawMessage(data);
-      return;
-    }
-    if (!this.bridge) {
-      super.onRawMessage(data);
-      return;
-    }
-
-    try {
-      const decoded = this.bridge.req0Decode(data);
-      const pending = this.pendingReqs.get(decoded.reqId);
-      if (pending) {
-        if (pending.timer) clearInterval(pending.timer);
-        this.pendingReqs.delete(decoded.reqId);
-        if (pending.ctx) {
-          pending.ctx.onMessage(decoded.body);
-          return;
-        }
-        // Deliver to socket
-        super.onRawMessage(decoded.body);
-        return;
-      }
-    } catch {
-      // Decode error or dropped
-    }
-  }
-
-  async recv(): Promise<Uint8Array> {
-    return await this.rawRecv();
   }
 
   override close(): void {
-    for (const pending of this.pendingReqs.values()) {
-      if (pending.timer) clearInterval(pending.timer);
+    if (this.resendTimer) {
+      clearInterval(this.resendTimer);
+      this.resendTimer = undefined;
     }
-    this.pendingReqs.clear();
     super.close();
   }
 }
 
 export class Rep0Socket extends BaseSocket {
-  private lastReqId?: number;
-
   constructor(url: string, opts?: SocketOptions) {
     super(url, opts, "rep0");
-  }
-
-  async recv(): Promise<Uint8Array> {
-    const raw = await this.rawRecv();
-    if (this.getOpt("raw") === true) {
-      return raw;
-    }
-    const bridge = await this.getBridge();
-    const decoded = bridge.req0Decode(raw);
-    this.lastReqId = decoded.reqId;
-    return decoded.body;
-  }
-
-  async send(payload: Uint8Array): Promise<void> {
-    if (this.getOpt("raw") === true) {
-      await this.rawSend(payload);
-      return;
-    }
-    if (this.lastReqId === undefined) {
-      throw new Error("Cannot send REP0 reply without preceding request");
-    }
-    const bridge = await this.getBridge();
-    const frame = bridge.rep0Encode(this.lastReqId, payload);
-    this.lastReqId = undefined;
-    await this.rawSend(frame);
   }
 }
 
@@ -702,11 +722,7 @@ export class Push0Socket extends BaseSocket {
     super(url, opts, "push0");
   }
 
-  async send(payload: Uint8Array): Promise<void> {
-    await this.rawSend(payload);
-  }
-
-  async recv(): Promise<Uint8Array> {
+  override async recv(): Promise<Uint8Array> {
     throw new Error("PUSH0 cannot receive");
   }
 }
@@ -716,100 +732,32 @@ export class Pull0Socket extends BaseSocket {
     super(url, opts, "pull0");
   }
 
-  async send(_payload: Uint8Array): Promise<void> {
+  override async send(_payload: Uint8Array): Promise<void> {
     throw new Error("PULL0 cannot send");
-  }
-
-  async recv(): Promise<Uint8Array> {
-    return await this.rawRecv();
   }
 }
 
 export class Surveyor0Socket extends BaseSocket {
-  private nextSurveyId = 1;
-  private currentSurveyId?: number;
-  private surveyDeadline = 0;
-
   constructor(url: string, opts?: SocketOptions) {
     super(url, opts, "surveyor0");
   }
 
-  async send(payload: Uint8Array): Promise<void> {
-    const bridge = await this.getBridge();
-    this.currentSurveyId = this.nextSurveyId++ & 0x7fffffff;
-    const duration = (this.getOpt("surveyTime") as number) ?? 1000;
-    this.surveyDeadline = Date.now() + duration;
-    const frame = bridge.survey0Encode(this.currentSurveyId, payload);
-    await this.rawSend(frame);
-  }
-
-  async recv(): Promise<Uint8Array> {
-    if (this.currentSurveyId === undefined) {
-      throw new Error("Cannot receive on SURVEYOR0 without active survey");
-    }
-    const remaining = this.surveyDeadline - Date.now();
-    if (remaining <= 0) {
-      this.currentSurveyId = undefined;
-      throw new Error("Survey timed out");
-    }
-    const bridge = await this.getBridge();
-    while (true) {
-      const raw = await this.rawRecv(remaining);
-      const decoded = bridge.survey0Decode(raw);
-      if (decoded.surveyId === this.currentSurveyId) {
-        return decoded.body;
-      }
-      // Non-matching survey response dropped
-    }
+  override async recv(timeoutMs?: number): Promise<Uint8Array> {
+    const surveyTime = (this.getOpt("surveyTime") as number) ?? 1000;
+    const timeout = timeoutMs ?? surveyTime;
+    return await this.rawRecv(timeout);
   }
 }
 
 export class Respondent0Socket extends BaseSocket {
-  private lastSurveyId?: number;
-
   constructor(url: string, opts?: SocketOptions) {
     super(url, opts, "respondent0");
-  }
-
-  async recv(): Promise<Uint8Array> {
-    const raw = await this.rawRecv();
-    const bridge = await this.getBridge();
-    const decoded = bridge.survey0Decode(raw);
-    this.lastSurveyId = decoded.surveyId;
-    return decoded.body;
-  }
-
-  async send(payload: Uint8Array): Promise<void> {
-    if (this.lastSurveyId === undefined) {
-      throw new Error("Cannot send RESPONDENT0 without active survey");
-    }
-    const bridge = await this.getBridge();
-    const frame = bridge.respondent0Encode(this.lastSurveyId, payload);
-    this.lastSurveyId = undefined;
-    await this.rawSend(frame);
   }
 }
 
 export class Bus0Socket extends BaseSocket {
   constructor(url: string, opts?: SocketOptions) {
     super(url, opts, "bus0");
-  }
-
-  async send(payload: Uint8Array, hops = 0): Promise<void> {
-    const bridge = await this.getBridge();
-    const frame = bridge.bus0Encode(hops, payload);
-    await this.rawSend(frame);
-  }
-
-  async recv(): Promise<Uint8Array> {
-    const raw = await this.rawRecv();
-    const bridge = await this.getBridge();
-    const decoded = bridge.bus0Decode(raw);
-    const maxTtl = (this.getOpt("maxTtl") as number) ?? 8;
-    if (decoded.hops > maxTtl) {
-      throw new Error(`BUS0 TTL exceeded: hops=${decoded.hops} max=${maxTtl}`);
-    }
-    return decoded.body;
   }
 }
 

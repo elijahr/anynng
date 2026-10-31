@@ -7,6 +7,7 @@ when defined(js):
   import std/asyncjs
   import std/jsffi
   import std/tables
+  import std/deques
   import ../core/types
   import ../core/framing/ws_framing
   import ../core/protocols/[pair0, pair1, pubsub0, reqrep0, pipeline0, survey0, bus0]
@@ -26,8 +27,8 @@ when defined(js):
       isClosed*: bool
       recvTimeoutMs*: int
       resendTimeMs*: int
-      recvQueue*: seq[seq[byte]]
-      recvWaiters*: seq[proc(val: seq[byte]) {.closure.}]
+      recvQueue*: Deque[seq[byte]]
+      recvWaiters*: Deque[proc(val: seq[byte]) {.closure.}]
       pendingReqId*: uint32
       resendTimer*: JsObject
       lastSentMsg*: SpMsg
@@ -49,8 +50,8 @@ when defined(js):
       reconnectTimeMinMs*: int
       reconnectTimeMaxMs*: int
       pipeNotifyHook*: PipeNotifyHook
-      recvQueue*: seq[seq[byte]]
-      recvWaiters*: seq[proc(val: seq[byte]) {.closure.}]
+      recvQueue*: Deque[seq[byte]]
+      recvWaiters*: Deque[proc(val: seq[byte]) {.closure.}]
       contexts*: seq[JsContext]
       nextCtxId*: CtxId
       # Protocol engines
@@ -95,22 +96,14 @@ when defined(js):
     return t
 
   proc toUint8Array*(data: openArray[byte]): JsUint8Array =
-    let len = data.len
     var u: JsUint8Array
-    {.emit: "`u` = new Uint8Array(`len`);".}
-    for i in 0 ..< len:
-      let b = data[i]
-      {.emit: "`u`[`i`] = `b`;".}
+    {.emit: "`u` = new Uint8Array(`data`);".}
     result = u
 
   proc toSeqByte*(u: JsUint8Array): seq[byte] =
-    var len: int
-    {.emit: "`len` = `u`.byteLength;".}
-    result = newSeq[byte](len)
-    for i in 0 ..< len:
-      var b: byte
-      {.emit: "`b` = `u`[`i`];".}
-      result[i] = b
+    var s: seq[byte]
+    {.emit: "`s` = Array.from(`u`);".}
+    result = s
 
   proc stepEngine(s: JsWsSocket, ev: EngineEvent): seq[EngineAction] =
     case s.proto
@@ -174,18 +167,16 @@ when defined(js):
             {.emit: "clearInterval(`timer`);".}
             targetCtx.resendTimer = nil
           if targetCtx.recvWaiters.len > 0:
-            let waiter = targetCtx.recvWaiters[0]
-            targetCtx.recvWaiters.delete(0)
+            let waiter = targetCtx.recvWaiters.popFirst()
             waiter(action.msg.body)
           else:
-            targetCtx.recvQueue.add(action.msg.body)
+            targetCtx.recvQueue.addLast(action.msg.body)
         else:
           if s.recvWaiters.len > 0:
-            let waiter = s.recvWaiters[0]
-            s.recvWaiters.delete(0)
+            let waiter = s.recvWaiters.popFirst()
             waiter(action.msg.body)
           else:
-            s.recvQueue.add(action.msg.body)
+            s.recvQueue.addLast(action.msg.body)
       of actClosePipe:
         let ws = s.ws
         if ws != nil:
@@ -238,8 +229,8 @@ when defined(js):
       reconnectTimeMinMs: 100,
       reconnectTimeMaxMs: 10000,
       pipeNotifyHook: nil,
-      recvQueue: @[],
-      recvWaiters: @[],
+      recvQueue: initDeque[seq[byte]](),
+      recvWaiters: initDeque[proc(val: seq[byte]) {.closure.}](),
       contexts: @[],
       nextCtxId: 2,
       surveyDeadline: 0.0,
@@ -305,11 +296,10 @@ when defined(js):
           if sock.raw:
             # Raw mode bypasses cooked protocol engine
             if sock.recvWaiters.len > 0:
-              let waiter = sock.recvWaiters[0]
-              sock.recvWaiters.delete(0)
+              let waiter = sock.recvWaiters.popFirst()
               waiter(rawFrame)
             else:
-              sock.recvQueue.add(rawFrame)
+              sock.recvQueue.addLast(rawFrame)
             return
 
           let acts = sock.stepEngine(
@@ -473,13 +463,12 @@ when defined(js):
     let p = newPromise[seq[byte]](
       proc(resolve: proc(val: seq[byte])) =
         if s.recvQueue.len > 0:
-          let msg = s.recvQueue[0]
-          s.recvQueue.delete(0)
+          let msg = s.recvQueue.popFirst()
           resolve(msg)
         elif s.isClosed:
           resolve(@[])
         else:
-          s.recvWaiters.add(
+          s.recvWaiters.addLast(
             proc(val: seq[byte]) =
               resolve(val)
           )
@@ -530,8 +519,8 @@ when defined(js):
       isClosed: false,
       recvTimeoutMs: recvTimeoutMs,
       resendTimeMs: resendTimeMs,
-      recvQueue: @[],
-      recvWaiters: @[],
+      recvQueue: initDeque[seq[byte]](),
+      recvWaiters: initDeque[proc(val: seq[byte]) {.closure.}](),
       pendingReqId: 0'u32,
       resendTimer: nil,
       lastSentMsg: initSpMsg(@[]),
@@ -574,13 +563,12 @@ when defined(js):
     let p = newPromise[seq[byte]](
       proc(resolve: proc(val: seq[byte])) =
         if ctx.recvQueue.len > 0:
-          let msg = ctx.recvQueue[0]
-          ctx.recvQueue.delete(0)
+          let msg = ctx.recvQueue.popFirst()
           resolve(msg)
         elif ctx.isClosed or ctx.socket.isClosed:
           resolve(@[])
         else:
-          ctx.recvWaiters.add(
+          ctx.recvWaiters.addLast(
             proc(val: seq[byte]) =
               resolve(val)
           )

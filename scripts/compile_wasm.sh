@@ -94,4 +94,8 @@ if [[ "${COMPILED}" -eq 0 || ! -f "${OUTPUT_WASM}" ]]; then
   exit 1
 fi
 
+if [[ -d "${ROOT_DIR}/ts/wasm" ]]; then
+  cp -f "${OUTPUT_WASM}" "${ROOT_DIR}/ts/wasm/anynng.wasm"
+fi
+
 echo "WASM compilation complete: ${OUTPUT_WASM} ($(wc -c < "${OUTPUT_WASM}" | tr -d ' ') bytes)"
