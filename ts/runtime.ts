@@ -564,4 +564,43 @@ export class AnynngBridge implements AnynngInstance {
       this.free(metaPtr);
     }
   }
+
+  createContext(): number {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    if (typeof this.exports.anynng_ctx_create === "function") {
+      return this.exports.anynng_ctx_create();
+    }
+    return 2;
+  }
+
+  closeContext(ctxId: number): void {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    if (typeof this.exports.anynng_ctx_close === "function") {
+      this.exports.anynng_ctx_close(ctxId);
+    }
+  }
+
+  pipeEventName(ev: number): string {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    if (typeof this.exports.anynng_pipe_event_name === "function") {
+      const bufPtr = this.alloc(32);
+      try {
+        const len = this.exports.anynng_pipe_event_name(ev, bufPtr, 32);
+        const bytes = new Uint8Array(this.memory.buffer, bufPtr, len);
+        return new TextDecoder().decode(bytes);
+      } finally {
+        this.free(bufPtr);
+      }
+    }
+    switch (ev) {
+      case 1:
+        return "add_pre";
+      case 2:
+        return "add_post";
+      case 3:
+        return "rem_post";
+      default:
+        return "unknown";
+    }
+  }
 }

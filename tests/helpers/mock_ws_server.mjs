@@ -1,11 +1,41 @@
 // tests/helpers/mock_ws_server.mjs - Pure Node.js SP WebSocket Server Mock
 import http from 'node:http';
+import https from 'node:https';
+import fs from 'node:fs';
+import { execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-export function createSpWsServer(port = 0, onMessage = null) {
-  const server = http.createServer();
+function getOrCreateTlsCerts() {
+  const certPath = '/tmp/anynng_test_cert.pem';
+  const keyPath = '/tmp/anynng_test_key.pem';
+  if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
+    try {
+      execSync("openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/anynng_test_key.pem -out /tmp/anynng_test_cert.pem -days 1 -subj '/CN=127.0.0.1'");
+    } catch {
+      // Fallback if openssl command fails
+    }
+  }
+  if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+    return {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath)
+    };
+  }
+  return null;
+}
+
+export function createSpWsServer(port = 0, onMessage = null, opts = {}) {
+  const isTls = Boolean(opts?.tls);
+  let server;
+  if (isTls) {
+    const certs = opts?.certs || getOrCreateTlsCerts();
+    server = https.createServer(certs);
+  } else {
+    server = http.createServer();
+  }
+
   const sockets = new Set();
   let serverHelper;
 
@@ -115,10 +145,11 @@ export function createSpWsServer(port = 0, onMessage = null) {
 
   return new Promise((resolve, reject) => {
     server.listen(port, '127.0.0.1', () => {
+      const scheme = isTls ? 'wss' : 'ws';
       serverHelper = {
         server,
         port: server.address().port,
-        url: `ws://127.0.0.1:${server.address().port}`,
+        url: `${scheme}://127.0.0.1:${server.address().port}`,
         sockets,
         sendBinary(targetSocket, data) {
           const buf = Buffer.from(data);
@@ -151,4 +182,8 @@ export function createSpWsServer(port = 0, onMessage = null) {
       resolve(serverHelper);
     });
   });
+}
+
+export function createSpWssServer(port = 0, onMessage = null, opts = {}) {
+  return createSpWsServer(port, onMessage, { ...opts, tls: true });
 }
