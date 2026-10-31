@@ -4,6 +4,7 @@
 when not defined(js):
   import std/[asyncnet, asyncdispatch, net]
   import ../core/types
+  import ../core/options
   import ../core/framing/stream_framing
 
   type TcpListener* = ref object
@@ -19,15 +20,15 @@ when not defined(js):
       onFrame: proc(pid: PipeId, frame: seq[byte]) {.closure.},
       onClose: proc(pid: PipeId) {.closure.},
   ) {.async.} =
-    var decoder = initStreamDecoder()
+    var decoder = initStreamDecoder(recvMax = 0x7FFFFFFF'u64)
     try:
       while not sock.isClosed:
-        let chunk = await sock.recv(4096)
+        let chunk = await sock.recv(65536)
         if chunk.len == 0:
           break # EOF
         var chunkBytes = newSeq[byte](chunk.len)
-        for i in 0 ..< chunk.len:
-          chunkBytes[i] = byte(chunk[i])
+        if chunk.len > 0:
+          copyMem(addr chunkBytes[0], unsafeAddr chunk[0], chunk.len)
         decoder.feed(
           chunkBytes,
           proc(frame: seq[byte]) =
@@ -80,8 +81,8 @@ when not defined(js):
       if not sock.isClosed:
         let encoded = encodeStreamFrame(data)
         var sOut = newString(encoded.len)
-        for i in 0 ..< encoded.len:
-          sOut[i] = char(encoded[i])
+        if encoded.len > 0:
+          copyMem(addr sOut[0], unsafeAddr encoded[0], encoded.len)
         asyncCheck sock.send(sOut)
 
     let closeCb = proc() =
@@ -103,8 +104,13 @@ when not defined(js):
   ): Future[TcpListener] {.async.} =
     let serverSock = newAsyncSocket(buffered = false)
     serverSock.setSockOpt(OptReuseAddr, true)
-    serverSock.setSockOpt(OptReusePort, true)
-    serverSock.bindAddr(Port(port), host)
+    try:
+      serverSock.bindAddr(Port(port), host)
+    except CatchableError as e:
+      serverSock.close()
+      raise newNngError(
+        NNG_EADDRINUSE, "Address in use: " & host & ":" & $port & " (" & e.msg & ")"
+      )
     serverSock.listen(128)
 
     let (_, allocatedPort) = serverSock.getLocalAddr()
@@ -148,8 +154,8 @@ when not defined(js):
             if not clientSock.isClosed:
               let encoded = encodeStreamFrame(data)
               var sOut = newString(encoded.len)
-              for i in 0 ..< encoded.len:
-                sOut[i] = char(encoded[i])
+              if encoded.len > 0:
+                copyMem(addr sOut[0], unsafeAddr encoded[0], encoded.len)
               asyncCheck clientSock.send(sOut)
 
           let closeCb = proc() =

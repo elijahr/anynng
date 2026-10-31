@@ -51,6 +51,12 @@ proc step*(eng: var Req0Engine, ev: EngineEvent): seq[EngineAction] =
   of evPipeAdded:
     if ev.pipeId notin eng.pipes:
       eng.pipes.add(ev.pipeId)
+      for reqId, preq in eng.pending:
+        if preq.pipeId notin eng.pipes or preq.pipeId == 0:
+          eng.pending[reqId].pipeId = ev.pipeId
+          result.add(
+            EngineAction(kind: actSendPipe, pipeId: ev.pipeId, rawFrame: preq.frame)
+          )
   of evPipeRemoved:
     var idx = -1
     for i, p in eng.pipes:
@@ -61,30 +67,57 @@ proc step*(eng: var Req0Engine, ev: EngineEvent): seq[EngineAction] =
       eng.pipes.delete(idx)
       if eng.currentPipeIdx >= eng.pipes.len:
         eng.currentPipeIdx = 0
+    var toDelete: seq[uint32] = @[]
+    for reqId, preq in eng.pending:
+      if preq.pipeId == ev.pipeId:
+        if eng.resendTimeMs <= 0:
+          result.add(
+            EngineAction(kind: actFailContext, ctxId: preq.ctxId, err: spErrConnReset)
+          )
+          toDelete.add(reqId)
+        elif eng.pipes.len > 0:
+          eng.pending[reqId].pipeId = eng.pipes[0]
+          result.add(
+            EngineAction(kind: actSendPipe, pipeId: eng.pipes[0], rawFrame: preq.frame)
+          )
+    for r in toDelete:
+      if eng.pending[r].ctxId in eng.ctxToReqId:
+        eng.ctxToReqId.del(eng.pending[r].ctxId)
+      eng.pending.del(r)
   of evUserSend:
-    if eng.pipes.len == 0:
-      result.add(EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrClosed))
-      return
+    if not eng.raw and ev.ctxId in eng.ctxToReqId:
+      let oldReqId = eng.ctxToReqId[ev.ctxId]
+      eng.pending.del(oldReqId)
+      eng.ctxToReqId.del(ev.ctxId)
+      result.add(
+        EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrCanceled)
+      )
 
-    let targetPipe = eng.pipes[eng.currentPipeIdx]
-    eng.currentPipeIdx = (eng.currentPipeIdx + 1) mod eng.pipes.len
-
-    var reqId: uint32
-    var frame: seq[byte]
+    let targetPipe =
+      if eng.pipes.len > 0:
+        eng.pipes[eng.currentPipeIdx]
+      else:
+        0'u32
+    if eng.pipes.len > 0:
+      eng.currentPipeIdx = (eng.currentPipeIdx + 1) mod eng.pipes.len
 
     if eng.raw:
-      frame = ev.msg.header & ev.msg.body
-      reqId =
-        if frame.len >= 4:
-          getBe32(frame, 0)
-        else:
-          0'u32
-    else:
-      reqId = eng.nextRequestId()
-      frame = newSeq[byte](4 + ev.msg.body.len)
-      putBe32(frame, 0, reqId)
-      for i in 0 ..< ev.msg.body.len:
-        frame[4 + i] = ev.msg.body[i]
+      let frame = ev.msg.header & ev.msg.body
+      if targetPipe != 0:
+        result.add(EngineAction(kind: actSendPipe, pipeId: targetPipe, rawFrame: frame))
+      result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
+      return
+
+    if ev.ctxId in eng.ctxToReqId:
+      let oldReqId = eng.ctxToReqId[ev.ctxId]
+      eng.pending.del(oldReqId)
+      eng.ctxToReqId.del(ev.ctxId)
+
+    let reqId = eng.nextRequestId()
+    var frame = newSeq[byte](4 + ev.msg.body.len)
+    putBe32(frame, 0, reqId)
+    for i in 0 ..< ev.msg.body.len:
+      frame[4 + i] = ev.msg.body[i]
 
     var preq = PendingReq(
       ctxId: ev.ctxId,
@@ -97,11 +130,36 @@ proc step*(eng: var Req0Engine, ev: EngineEvent): seq[EngineAction] =
     eng.pending[reqId] = preq
     eng.ctxToReqId[ev.ctxId] = reqId
 
-    result.add(EngineAction(kind: actSendPipe, pipeId: targetPipe, rawFrame: frame))
+    if targetPipe != 0:
+      result.add(EngineAction(kind: actSendPipe, pipeId: targetPipe, rawFrame: frame))
     result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
   of evPipeMessage:
     if ev.rawFrame.len < 4:
       result.add(EngineAction(kind: actClosePipe, pipeId: ev.pipeId, err: spErrProto))
+      return
+
+    if eng.raw:
+      var offset = 0
+      var foundEnd = false
+      var hops = 0
+      while offset + 4 <= ev.rawFrame.len:
+        let word = getBe32(ev.rawFrame, offset)
+        offset += 4
+        inc hops
+        if (word and 0x80000000'u32) != 0:
+          foundEnd = true
+          break
+        if hops > 8:
+          return
+      if not foundEnd:
+        result.add(EngineAction(kind: actClosePipe, pipeId: ev.pipeId, err: spErrProto))
+        return
+      var msg: SpMsg
+      msg.header = ev.rawFrame[0 ..< offset]
+      msg.body = ev.rawFrame[offset .. ^1]
+      result.add(
+        EngineAction(kind: actDeliverRecv, ctxId: 0, msg: msg, pipeId: ev.pipeId)
+      )
       return
 
     let reqId = getBe32(ev.rawFrame, 0)
@@ -116,11 +174,7 @@ proc step*(eng: var Req0Engine, ev: EngineEvent): seq[EngineAction] =
       eng.ctxToReqId.del(preq.ctxId)
 
       var msg: SpMsg
-      if eng.raw:
-        msg.header = ev.rawFrame[0 ..< 4]
-        msg.body = ev.rawFrame[4 .. ^1]
-      else:
-        msg.body = ev.rawFrame[4 .. ^1]
+      msg.body = ev.rawFrame[4 .. ^1]
 
       result.add(
         EngineAction(
@@ -140,6 +194,7 @@ proc step*(eng: var Req0Engine, ev: EngineEvent): seq[EngineAction] =
     for reqId, preq in eng.pending:
       if preq.resendIntervalMs > 0 and
           (ev.nowMs - preq.sentAtMs) >= preq.resendIntervalMs:
+        eng.pending[reqId].sentAtMs = ev.nowMs
         if eng.pipes.len > 0:
           let pipe =
             if preq.pipeId in eng.pipes:
@@ -201,7 +256,7 @@ proc step*(eng: var Rep0Engine, ev: EngineEvent): seq[EngineAction] =
         break
       if hops > eng.maxTtl:
         # Exceeded TTL without finding bottom marker
-        break
+        return
 
     if not foundBottom:
       # Malformed: no request ID with bit 31 set found
@@ -218,8 +273,15 @@ proc step*(eng: var Rep0Engine, ev: EngineEvent): seq[EngineAction] =
       eng.reqStack.add(repState)
 
     var msg: SpMsg
-    msg.header = header
-    msg.body = body
+    if eng.raw:
+      var pidBytes = newSeq[byte](4)
+      putBe32(pidBytes, 0, uint32(ev.pipeId))
+      msg.header = pidBytes & header
+      msg.body = body
+    else:
+      msg.header = header
+      msg.body = body
+    msg.pipeId = ev.pipeId
 
     result.add(
       EngineAction(kind: actDeliverRecv, ctxId: ev.ctxId, msg: msg, pipeId: ev.pipeId)
@@ -243,7 +305,8 @@ proc step*(eng: var Rep0Engine, ev: EngineEvent): seq[EngineAction] =
         state = eng.reqStack[foundIdx]
         eng.reqStack.delete(foundIdx)
       else:
-        state = eng.reqStack.pop()
+        state = eng.reqStack[0]
+        eng.reqStack.delete(0)
       found = true
     elif eng.contexts.len > 0:
       for k in eng.contexts.keys:
@@ -253,7 +316,7 @@ proc step*(eng: var Rep0Engine, ev: EngineEvent): seq[EngineAction] =
         break
 
     if not found:
-      result.add(EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrClosed))
+      result.add(EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrState))
       return
 
     var frame: seq[byte]

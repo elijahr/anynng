@@ -67,6 +67,8 @@ type
     spErrBadUrl = 6
     spErrNotSupported = 7
     spErrCanceled = 8
+    spErrState = 9
+    spErrConnReset = 10
 
   SpTimeoutError* = object of CatchableError
 
@@ -82,6 +84,7 @@ type
     proto*: SpProto
     sendImpl*: proc(data: openArray[byte]) {.closure.}
     closeImpl*: proc() {.closure.}
+    drainImpl*: proc() {.closure.}
     sockPtr*: pointer
     dialerPtr*: pointer
     listenerPtr*: pointer
@@ -99,6 +102,10 @@ proc send*(p: Pipe, data: openArray[byte]) =
 proc close*(p: Pipe) =
   if p != nil and p.closeImpl != nil:
     p.closeImpl()
+
+proc drain*(p: Pipe) =
+  if p != nil and p.drainImpl != nil:
+    p.drainImpl()
 
 proc newPipe*(
     pipeId: PipeId,

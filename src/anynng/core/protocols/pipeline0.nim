@@ -30,7 +30,9 @@ proc step*(eng: var Push0Engine, ev: EngineEvent): seq[EngineAction] =
         eng.currentPipeIdx = 0
   of evUserSend:
     if eng.pipes.len == 0:
-      result.add(EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrClosed))
+      result.add(
+        EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrTimedOut)
+      )
     else:
       let targetPipe = eng.pipes[eng.currentPipeIdx]
       eng.currentPipeIdx = (eng.currentPipeIdx + 1) mod eng.pipes.len

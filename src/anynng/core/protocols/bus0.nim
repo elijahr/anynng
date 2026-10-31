@@ -28,7 +28,8 @@ proc step*(eng: var Bus0Engine, ev: EngineEvent): seq[EngineAction] =
     # Full mesh: broadcast outgoing message to ALL connected pipes
     let frame = ev.msg.header & ev.msg.body
     for p in eng.pipes:
-      result.add(EngineAction(kind: actSendPipe, pipeId: p, rawFrame: frame))
+      if ev.msg.pipeId == 0 or p != ev.msg.pipeId:
+        result.add(EngineAction(kind: actSendPipe, pipeId: p, rawFrame: frame))
     result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
   of evPipeMessage:
     # CRIT-04 & nng/bus.c:249: Cooked BUS0 delivers strictly to local receive!

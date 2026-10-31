@@ -37,6 +37,9 @@ when not defined(js):
       timeout*: int64
       finished*: bool
       stopped*: bool
+      sockId*: uint32
+      ctxId*: uint32
+      startTime*: int64
 
     NngPipeNotifyCbCdecl* = proc(pipe: NngPipeObj, ev: cint, arg: pointer) {.cdecl.}
 
@@ -67,6 +70,7 @@ when not defined(js):
 
     gNextCtxId: uint32 = 1
     gContexts = initTable[uint32, Context]()
+    gClosedCtxs = initHashSet[uint32]()
 
     gNextPipeId: uint32 = 1
     gPipes = initTable[uint32, Pipe]()
@@ -75,6 +79,103 @@ when not defined(js):
     gNextTlsCfgId: uint32 = 1
 
     gPipeCallbacks = initTable[uint32, seq[PipeNotifyWrapper]]()
+    gPendingSendAios: seq[ptr NngAioObj] = @[]
+
+  proc nng_aio_finish*(aio: ptr NngAioObj, err: cint) {.exportc, dynlib, cdecl.}
+  proc nng_sendmsg*(
+    s: NngSocketObj, msg: ptr NngMsgObj, flags: cint
+  ): cint {.exportc, dynlib, cdecl.}
+
+  proc nng_ctx_sendmsg*(
+    c: NngCtxObj, msg: ptr NngMsgObj, flags: cint
+  ): cint {.exportc, dynlib, cdecl.}
+
+  proc hasReqInFlight*(s: Socket, ctxId: uint32): bool =
+    if ctxId in s.req0Eng.ctxToReqId:
+      return true
+    for a in gPendingSendAios:
+      if a.sockId == s.id and a.ctxId == ctxId:
+        return true
+    return false
+
+  proc tickSockets*() =
+    let now = currentNowMs()
+    for s in gSockets.values:
+      if not s.closed and s.engineKind == engReq0 and s.req0Eng.pending.len > 0:
+        let actions = s.stepEngine(EngineEvent(kind: evTimerTick, nowMs: now))
+        s.executeActions(actions)
+        s.updateSendFd()
+
+  proc servicePendingSends*() =
+    tickSockets()
+    var i = 0
+    let now = getMonoTime().ticks div 1_000_000
+    while i < gPendingSendAios.len:
+      let a = gPendingSendAios[i]
+      if a.finished or a.stopped:
+        gPendingSendAios.delete(i)
+        continue
+      if a.sockId notin gSockets or gSockets[a.sockId].closed:
+        gPendingSendAios.delete(i)
+        nng_aio_finish(a, cint(NNG_ECLOSED))
+        continue
+      if a.ctxId != 0 and (
+        a.ctxId in gClosedCtxs or a.ctxId notin gContexts or gContexts[a.ctxId].closed
+      ):
+        gPendingSendAios.delete(i)
+        nng_aio_finish(a, cint(NNG_ECLOSED))
+        continue
+      let s = gSockets[a.sockId]
+      let maxInFlight = if s.pipes.len > 0: s.pipes.len else: 1
+      if s.engineKind in {engRep0, engReq0} and s.inFlight >= maxInFlight:
+        inc i
+        continue
+      if s.pipes.len > 0:
+        gPendingSendAios.delete(i)
+        if a.ctxId != 0:
+          let res = nng_ctx_sendmsg(NngCtxObj(id: a.ctxId), a.msg, 0)
+          a.msg = nil
+          nng_aio_finish(a, res)
+        else:
+          let res = nng_sendmsg(NngSocketObj(id: a.sockId), a.msg, 0)
+          a.msg = nil
+          nng_aio_finish(a, res)
+        continue
+      if a.timeout >= 0 and (now - a.startTime) >= a.timeout:
+        gPendingSendAios.delete(i)
+        nng_aio_finish(a, cint(NNG_ETIMEDOUT))
+        continue
+      inc i
+
+  proc closePendingSendsForSocket*(sockId: uint32) =
+    var i = 0
+    while i < gPendingSendAios.len:
+      let a = gPendingSendAios[i]
+      if a.sockId == sockId:
+        gPendingSendAios.delete(i)
+        if not a.finished:
+          nng_aio_finish(a, cint(NNG_ECLOSED))
+      else:
+        inc i
+
+  proc closePendingSendsForCtx*(ctxId: uint32) =
+    var i = 0
+    while i < gPendingSendAios.len:
+      let a = gPendingSendAios[i]
+      if a.ctxId == ctxId:
+        gPendingSendAios.delete(i)
+        if not a.finished:
+          nng_aio_finish(a, cint(NNG_ECLOSED))
+      else:
+        inc i
+
+  gOnPipeHook = proc() =
+    servicePendingSends()
+
+  gPendingAioCountProc = proc(sockId: uint32): int =
+    for a in gPendingSendAios:
+      if a.sockId == sockId:
+        inc result
 
   # Helper: translate NngError / exceptions to C error codes
   proc toCError(e: ref Exception): cint =
@@ -170,6 +271,7 @@ when not defined(js):
   proc regSocket(s: Socket): NngSocketObj =
     let id = gNextSockId
     inc gNextSockId
+    s.id = id
     gSockets[id] = s
     result.id = id
 
@@ -177,8 +279,17 @@ when not defined(js):
     if s.id notin gSockets:
       return cint(NNG_ECLOSED)
     let sock = gSockets[s.id]
+    closePendingSendsForSocket(s.id)
     gSockets.del(s.id)
     gPipeCallbacks.del(s.id)
+    var ctxsToDel: seq[uint32] = @[]
+    for cid, ctx in gContexts:
+      if ctx.socket == sock:
+        ctxsToDel.add(cid)
+    for cid in ctxsToDel:
+      closePendingSendsForCtx(cid)
+      gClosedCtxs.incl(cid)
+      gContexts.del(cid)
     try:
       sock.close()
       return 0
@@ -365,6 +476,8 @@ when not defined(js):
       dialer.start()
       return 0
     except CatchableError as e:
+      if (flags and 2) != 0: # NNG_FLAG_NONBLOCK
+        return 0
       return toCError(e)
 
   proc nng_dialer_close*(d: NngDialerObj): cint {.exportc, dynlib, cdecl.} =
@@ -427,9 +540,15 @@ when not defined(js):
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
     try:
-      let d = sock.dial($url)
+      let d = sock.newDialer($url)
       if dp != nil:
         dp[] = regDialer(d)
+      try:
+        d.start()
+      except CatchableError as e:
+        if (flags and 2) != 0: # NNG_FLAG_NONBLOCK
+          return 0
+        raise e
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -669,6 +788,8 @@ when not defined(js):
     if s.id notin gSockets:
       return cint(NNG_ECLOSED)
     let sock = gSockets[s.id]
+    if sock.engineKind in {engSub0, engPull0}:
+      return cint(NNG_ENOTSUP)
     var buf = newSeq[byte](sz)
     if sz > 0 and data != nil:
       copyMem(addr buf[0], data, int(sz))
@@ -681,16 +802,39 @@ when not defined(js):
   proc nng_recv*(
       s: NngSocketObj, data: pointer, szp: ptr csize_t, flags: cint
   ): cint {.exportc, dynlib, cdecl.} =
-    if s.id notin gSockets or szp == nil:
+    if s.id notin gSockets:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
+    if sock.engineKind in {engPub0, engPush0}:
+      return cint(NNG_ENOTSUP)
+    if szp == nil:
+      return cint(NNG_EINVAL)
     let nonblock = (flags and 2) != 0 # NNG_FLAG_NONBLOCK
     let recvTimeout = sock.getMs(NNG_OPT_RECVTIMEO)
 
+    if sock.lastErr != 0:
+      let err = sock.lastErr
+      sock.lastErr = 0
+      return err
     let start = getMonoTime().ticks div 1_000_000
+    if sock.engineKind == engSurveyor0 and not sock.raw:
+      if sock.recvQueue.len == 0 and not sock.inSurvey(0):
+        return cint(NNG_ESTATE)
+    if sock.engineKind == engReq0 and not sock.raw:
+      if sock.recvQueue.len == 0 and not hasReqInFlight(sock, 0):
+        return cint(NNG_ESTATE)
     while sock.recvQueue.len == 0:
+      tickSockets()
+      servicePendingSends()
+      if sock.lastErr != 0:
+        let err = sock.lastErr
+        sock.lastErr = 0
+        return err
       if nonblock:
         return cint(NNG_EAGAIN)
+      if sock.engineKind == engSurveyor0 and not sock.raw:
+        if not sock.inSurvey(0):
+          return cint(NNG_ETIMEDOUT)
       if recvTimeout >= 0:
         let now = getMonoTime().ticks div 1_000_000
         if (now - start) >= recvTimeout:
@@ -698,7 +842,7 @@ when not defined(js):
       try:
         poll(10)
       except CatchableError:
-        break
+        sleep(5)
 
     if sock.recvQueue.len == 0:
       return cint(NNG_ETIMEDOUT)
@@ -716,10 +860,12 @@ when not defined(js):
     if s.id notin gSockets or msg == nil:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
+    if sock.engineKind in {engSub0, engPull0}:
+      return cint(NNG_ENOTSUP)
     var spMsg = SpMsg(header: msg.header, body: msg.body, pipeId: msg.pipeId)
-    nng_msg_free(msg)
     try:
       sock.sendMsg(spMsg)
+      nng_msg_free(msg)
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -727,16 +873,39 @@ when not defined(js):
   proc nng_recvmsg*(
       s: NngSocketObj, msgp: ptr ptr NngMsgObj, flags: cint
   ): cint {.exportc, dynlib, cdecl.} =
-    if s.id notin gSockets or msgp == nil:
+    if s.id notin gSockets:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
+    if sock.engineKind in {engPub0, engPush0}:
+      return cint(NNG_ENOTSUP)
+    if msgp == nil:
+      return cint(NNG_EINVAL)
     let nonblock = (flags and 2) != 0
     let recvTimeout = sock.getMs(NNG_OPT_RECVTIMEO)
 
+    if sock.lastErr != 0:
+      let err = sock.lastErr
+      sock.lastErr = 0
+      return err
     let start = getMonoTime().ticks div 1_000_000
+    if sock.engineKind == engSurveyor0 and not sock.raw:
+      if sock.recvQueue.len == 0 and not sock.inSurvey(0):
+        return cint(NNG_ESTATE)
+    if sock.engineKind == engReq0 and not sock.raw:
+      if sock.recvQueue.len == 0 and not hasReqInFlight(sock, 0):
+        return cint(NNG_ESTATE)
     while sock.recvQueue.len == 0:
+      tickSockets()
+      servicePendingSends()
+      if sock.lastErr != 0:
+        let err = sock.lastErr
+        sock.lastErr = 0
+        return err
       if nonblock:
         return cint(NNG_EAGAIN)
+      if sock.engineKind == engSurveyor0 and not sock.raw:
+        if not sock.inSurvey(0):
+          return cint(NNG_ETIMEDOUT)
       if recvTimeout >= 0:
         let now = getMonoTime().ticks div 1_000_000
         if (now - start) >= recvTimeout:
@@ -744,7 +913,7 @@ when not defined(js):
       try:
         poll(10)
       except CatchableError:
-        break
+        sleep(5)
 
     if sock.recvQueue.len == 0:
       return cint(NNG_ETIMEDOUT)
@@ -768,6 +937,7 @@ when not defined(js):
     let id = gNextCtxId
     inc gNextCtxId
     gContexts[id] = ctx
+    gClosedCtxs.excl(id)
     result.id = id
 
   proc nng_ctx_open*(
@@ -784,10 +954,14 @@ when not defined(js):
       return toCError(e)
 
   proc nng_ctx_close*(c: NngCtxObj): cint {.exportc, dynlib, cdecl.} =
+    if c.id in gClosedCtxs:
+      return cint(NNG_ECLOSED)
     if c.id notin gContexts:
       return cint(NNG_ECLOSED)
     let ctx = gContexts[c.id]
+    closePendingSendsForCtx(c.id)
     gContexts.del(c.id)
+    gClosedCtxs.incl(c.id)
     try:
       ctx.close()
       return 0
@@ -803,10 +977,12 @@ when not defined(js):
     if c.id notin gContexts or msg == nil:
       return cint(NNG_EINVAL)
     let ctx = gContexts[c.id]
+    if ctx.socket.engineKind in {engSub0, engPull0}:
+      return cint(NNG_ENOTSUP)
     var spMsg = SpMsg(header: msg.header, body: msg.body, pipeId: msg.pipeId)
-    nng_msg_free(msg)
     try:
       ctx.sendMsg(spMsg)
+      nng_msg_free(msg)
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -817,13 +993,48 @@ when not defined(js):
     if c.id notin gContexts or msgp == nil:
       return cint(NNG_EINVAL)
     let ctx = gContexts[c.id]
+    if ctx.socket.engineKind in {engPub0, engPush0}:
+      return cint(NNG_ENOTSUP)
     let nonblock = (flags and 2) != 0
     let recvTimeout = ctx.socket.getMs(NNG_OPT_RECVTIMEO)
 
+    if ctx.lastErr != 0:
+      let err = ctx.lastErr
+      ctx.lastErr = 0
+      return err
+
+    # If context recvQueue is empty but socket has messages for Rep/Respondent, claim one
+    if ctx.recvQueue.len == 0 and ctx.socket.recvQueue.len > 0 and
+        ctx.socket.engineKind in {engRep0, engRespondent0}:
+      let msg = ctx.socket.recvQueue[0]
+      ctx.socket.recvQueue.delete(0)
+      if ctx.socket.engineKind == engRespondent0 and
+          ctx.socket.respondent0Eng.reqStack.len > 0:
+        ctx.socket.respondent0Eng.contexts[ctx.ctxId] =
+          ctx.socket.respondent0Eng.reqStack.pop()
+      elif ctx.socket.engineKind == engRep0 and ctx.socket.rep0Eng.reqStack.len > 0:
+        ctx.socket.rep0Eng.contexts[ctx.ctxId] = ctx.socket.rep0Eng.reqStack.pop()
+      ctx.recvQueue.add(msg)
+
     let start = getMonoTime().ticks div 1_000_000
+    if ctx.socket.engineKind == engSurveyor0 and not ctx.socket.raw:
+      if ctx.recvQueue.len == 0 and not ctx.socket.inSurvey(ctx.ctxId):
+        return cint(NNG_ESTATE)
+    if ctx.socket.engineKind == engReq0 and not ctx.socket.raw:
+      if ctx.recvQueue.len == 0 and not hasReqInFlight(ctx.socket, c.id):
+        return cint(NNG_ESTATE)
     while ctx.recvQueue.len == 0:
+      tickSockets()
+      servicePendingSends()
+      if ctx.lastErr != 0:
+        let err = ctx.lastErr
+        ctx.lastErr = 0
+        return err
       if nonblock:
         return cint(NNG_EAGAIN)
+      if ctx.socket.engineKind == engSurveyor0 and not ctx.socket.raw:
+        if not ctx.socket.inSurvey(ctx.ctxId):
+          return cint(NNG_ETIMEDOUT)
       if recvTimeout >= 0:
         let now = getMonoTime().ticks div 1_000_000
         if (now - start) >= recvTimeout:
@@ -831,7 +1042,18 @@ when not defined(js):
       try:
         poll(10)
       except CatchableError:
-        break
+        sleep(5)
+      if ctx.recvQueue.len == 0 and ctx.socket.recvQueue.len > 0 and
+          ctx.socket.engineKind in {engRep0, engRespondent0}:
+        let msg = ctx.socket.recvQueue[0]
+        ctx.socket.recvQueue.delete(0)
+        if ctx.socket.engineKind == engRespondent0 and
+            ctx.socket.respondent0Eng.reqStack.len > 0:
+          ctx.socket.respondent0Eng.contexts[ctx.ctxId] =
+            ctx.socket.respondent0Eng.reqStack.pop()
+        elif ctx.socket.engineKind == engRep0 and ctx.socket.rep0Eng.reqStack.len > 0:
+          ctx.socket.rep0Eng.contexts[ctx.ctxId] = ctx.socket.rep0Eng.reqStack.pop()
+        ctx.recvQueue.add(msg)
 
     if ctx.recvQueue.len == 0:
       return cint(NNG_ETIMEDOUT)
@@ -848,14 +1070,31 @@ when not defined(js):
       return toCError(e)
 
   # Context Options
+  proc nng_ctx_get*(
+      c: NngCtxObj, name: cstring, val: pointer, szp: ptr csize_t
+  ): cint {.exportc, dynlib, cdecl.} =
+    if c.id in gClosedCtxs:
+      return cint(NNG_ECLOSED)
+    if c.id notin gContexts or name == nil or szp == nil:
+      return cint(NNG_EINVAL)
+    let optName = $name
+    if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
+      return cint(NNG_EWRITEONLY)
+    return cint(NNG_ENOTSUP)
+
   proc nng_ctx_get_int*(
       c: NngCtxObj, name: cstring, val: ptr cint
   ): cint {.exportc, dynlib, cdecl.} =
+    if c.id in gClosedCtxs:
+      return cint(NNG_ECLOSED)
     if c.id notin gContexts or name == nil or val == nil:
       return cint(NNG_EINVAL)
+    let optName = $name
+    if optName in [NNG_OPT_SENDFD, NNG_OPT_RECVFD]:
+      return cint(NNG_ENOTSUP)
     let ctx = gContexts[c.id]
     try:
-      val[] = cint(ctx.getInt($name))
+      val[] = cint(ctx.getInt(optName))
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -863,6 +1102,8 @@ when not defined(js):
   proc nng_ctx_set*(
       c: NngCtxObj, name: cstring, val: pointer, sz: csize_t
   ): cint {.exportc, dynlib, cdecl.} =
+    if c.id in gClosedCtxs:
+      return cint(NNG_ECLOSED)
     if c.id notin gContexts or name == nil:
       return cint(NNG_EINVAL)
     let ctx = gContexts[c.id]
@@ -872,16 +1113,22 @@ when not defined(js):
         var b = newSeq[byte](sz)
         if sz > 0 and val != nil:
           copyMem(addr b[0], val, int(sz))
-        ctx.socket.sub0Eng.subscribe(b)
-        return 0
+        try:
+          ctx.subscribe(b)
+          return 0
+        except CatchableError as e:
+          return toCError(e)
       return cint(NNG_ENOTSUP)
     elif optName == NNG_OPT_SUB_UNSUBSCRIBE:
       if ctx.socket.engineKind == engSub0:
         var b = newSeq[byte](sz)
         if sz > 0 and val != nil:
           copyMem(addr b[0], val, int(sz))
-        ctx.socket.sub0Eng.unsubscribe(b)
-        return 0
+        try:
+          ctx.unsubscribe(b)
+          return 0
+        except CatchableError as e:
+          return toCError(e)
       return cint(NNG_ENOTSUP)
     try:
       if optName in ctx.options.values:
@@ -918,8 +1165,11 @@ when not defined(js):
     var b = newSeq[byte](sz)
     if sz > 0 and buf != nil:
       copyMem(addr b[0], buf, int(sz))
-    sock.sub0Eng.subscribe(b)
-    return 0
+    try:
+      sock.sub0Eng.subscribe(b)
+      return 0
+    except CatchableError as e:
+      return toCError(e)
 
   proc nng_sub0_socket_unsubscribe*(
       s: NngSocketObj, buf: pointer, sz: csize_t
@@ -932,8 +1182,11 @@ when not defined(js):
     var b = newSeq[byte](sz)
     if sz > 0 and buf != nil:
       copyMem(addr b[0], buf, int(sz))
-    sock.sub0Eng.unsubscribe(b)
-    return 0
+    try:
+      sock.sub0Eng.unsubscribe(b)
+      return 0
+    except CatchableError as e:
+      return toCError(e)
 
   proc nng_sub0_ctx_subscribe*(
       c: NngCtxObj, buf: pointer, sz: csize_t
@@ -946,8 +1199,11 @@ when not defined(js):
     var b = newSeq[byte](sz)
     if sz > 0 and buf != nil:
       copyMem(addr b[0], buf, int(sz))
-    ctx.socket.sub0Eng.subscribe(b)
-    return 0
+    try:
+      ctx.subscribe(b)
+      return 0
+    except CatchableError as e:
+      return toCError(e)
 
   proc nng_sub0_ctx_unsubscribe*(
       c: NngCtxObj, buf: pointer, sz: csize_t
@@ -960,8 +1216,11 @@ when not defined(js):
     var b = newSeq[byte](sz)
     if sz > 0 and buf != nil:
       copyMem(addr b[0], buf, int(sz))
-    ctx.socket.sub0Eng.unsubscribe(b)
-    return 0
+    try:
+      ctx.unsubscribe(b)
+      return 0
+    except CatchableError as e:
+      return toCError(e)
 
   # ----------------------------------------------------------------------
   # AIO (Asynchronous I/O)
@@ -984,12 +1243,18 @@ when not defined(js):
 
   proc nng_aio_free*(aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil:
+      let idx = gPendingSendAios.find(aio)
+      if idx >= 0:
+        gPendingSendAios.delete(idx)
       if aio.msg != nil:
         nng_msg_free(aio.msg)
       freeShared(aio)
 
   proc nng_aio_stop*(aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil:
+      let idx = gPendingSendAios.find(aio)
+      if idx >= 0:
+        gPendingSendAios.delete(idx)
       aio.stopped = true
       aio.err = cint(NNG_ECANCELED)
       aio.finished = true
@@ -999,26 +1264,89 @@ when not defined(js):
       return
     let start = getMonoTime().ticks div 1_000_000
     while not aio.finished:
+      servicePendingSends()
+      if aio.finished:
+        break
       if aio.timeout >= 0:
         let now = getMonoTime().ticks div 1_000_000
         if (now - start) >= aio.timeout:
+          let idx = gPendingSendAios.find(aio)
+          if idx >= 0:
+            gPendingSendAios.delete(idx)
           aio.err = cint(NNG_ETIMEDOUT)
           aio.finished = true
           break
+      for id, s in gSockets:
+        if s.closed:
+          continue
+        if s.engineKind == engSurveyor0 and not s.raw:
+          discard s.inSurvey(0)
+          if s.pendingRecvCb != nil and not s.inSurvey(0):
+            let cb = s.pendingRecvCb
+            s.pendingRecvCb = nil
+            cb(NNG_ETIMEDOUT, SpMsg())
+        elif s.engineKind == engReq0 and not s.raw:
+          let rcvTmo = s.getMs(NNG_OPT_RECVTIMEO)
+          if rcvTmo >= 0 and s.pendingRecvCb != nil:
+            let now = getMonoTime().ticks div 1_000_000
+            if (now - start) >= rcvTmo:
+              let cb = s.pendingRecvCb
+              s.pendingRecvCb = nil
+              cb(NNG_ETIMEDOUT, SpMsg())
+              var j = 0
+              while j < gPendingSendAios.len:
+                let snd = gPendingSendAios[j]
+                if snd.sockId == s.id and snd.ctxId == 0:
+                  gPendingSendAios.delete(j)
+                  nng_aio_finish(snd, cint(NNG_ECANCELED))
+                else:
+                  inc j
+      for id, c in gContexts:
+        if c.closed or c.socket.closed:
+          continue
+        if c.socket.engineKind == engSurveyor0 and not c.socket.raw:
+          discard c.socket.inSurvey(c.ctxId)
+          if c.pendingRecvCb != nil and not c.socket.inSurvey(c.ctxId):
+            let cb = c.pendingRecvCb
+            c.pendingRecvCb = nil
+            cb(NNG_ETIMEDOUT, SpMsg())
+        elif c.socket.engineKind == engReq0 and not c.socket.raw:
+          let rcvTmo = c.socket.getMs(NNG_OPT_RECVTIMEO)
+          if rcvTmo >= 0 and c.pendingRecvCb != nil:
+            let now = getMonoTime().ticks div 1_000_000
+            if (now - start) >= rcvTmo:
+              let cb = c.pendingRecvCb
+              c.pendingRecvCb = nil
+              cb(NNG_ETIMEDOUT, SpMsg())
+              var j = 0
+              while j < gPendingSendAios.len:
+                let snd = gPendingSendAios[j]
+                if snd.sockId == c.socket.id and snd.ctxId == c.ctxId:
+                  gPendingSendAios.delete(j)
+                  nng_aio_finish(snd, cint(NNG_ECANCELED))
+                else:
+                  inc j
       try:
         poll(10)
       except CatchableError:
-        break
+        sleep(5)
 
   proc nng_aio_cancel*(aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil:
+      let idx = gPendingSendAios.find(aio)
+      if idx >= 0:
+        gPendingSendAios.delete(idx)
       aio.err = cint(NNG_ECANCELED)
       aio.finished = true
 
   proc nng_aio_abort*(aio: ptr NngAioObj, err: cint) {.exportc, dynlib, cdecl.} =
     if aio != nil:
+      let idx = gPendingSendAios.find(aio)
+      if idx >= 0:
+        gPendingSendAios.delete(idx)
       aio.err = err
       aio.finished = true
+      aio.stopped = true
 
   proc nng_aio_result*(aio: ptr NngAioObj): cint {.exportc, dynlib, cdecl.} =
     if aio == nil:
@@ -1039,7 +1367,6 @@ when not defined(js):
     if aio == nil:
       return nil
     result = aio.msg
-    aio.msg = nil
 
   proc nng_aio_finish*(aio: ptr NngAioObj, err: cint) {.exportc, dynlib, cdecl.} =
     if aio != nil:
@@ -1055,12 +1382,42 @@ when not defined(js):
     nng_aio_finish(aio, 0)
 
   proc nng_send_aio*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
-    if aio != nil and aio.stopped:
+    if aio == nil:
+      return
+    if aio.stopped:
       nng_aio_finish(aio, cint(NNG_ECANCELED))
       return
-    if s.id notin gSockets or aio == nil or aio.msg == nil:
-      if aio != nil:
-        nng_aio_finish(aio, cint(NNG_EINVAL))
+    if s.id notin gSockets or aio.msg == nil:
+      nng_aio_finish(aio, cint(NNG_EINVAL))
+      return
+    let sock = gSockets[s.id]
+    if sock.closed:
+      nng_aio_finish(aio, cint(NNG_ECLOSED))
+      return
+    if sock.engineKind in {engSub0, engPull0}:
+      nng_aio_finish(aio, cint(NNG_ENOTSUP))
+      return
+    aio.sockId = s.id
+    aio.ctxId = 0
+    aio.startTime = getMonoTime().ticks div 1_000_000
+    if sock.engineKind == engReq0:
+      var i = 0
+      while i < gPendingSendAios.len:
+        let prev = gPendingSendAios[i]
+        if prev.sockId == s.id and prev.ctxId == 0:
+          gPendingSendAios.delete(i)
+          nng_aio_finish(prev, cint(NNG_ECANCELED))
+        else:
+          inc i
+    if sock.pipes.len == 0 and sock.engineKind in {
+      engPush0, engPair0, engPair1, engReq0
+    }:
+      if aio.timeout == 0:
+        nng_aio_finish(aio, cint(NNG_ETIMEDOUT))
+        return
+      aio.finished = false
+      aio.err = 0
+      gPendingSendAios.add(aio)
       return
     let res = nng_sendmsg(s, aio.msg, 0)
     aio.msg = nil
@@ -1074,31 +1431,167 @@ when not defined(js):
       if aio != nil:
         nng_aio_finish(aio, cint(NNG_EINVAL))
       return
-    var msg: ptr NngMsgObj = nil
-    let res = nng_recvmsg(s, addr msg, 0)
-    if res == 0:
-      nng_aio_set_msg(aio, msg)
-    nng_aio_finish(aio, res)
+    let sock = gSockets[s.id]
+    if sock.closed:
+      nng_aio_finish(aio, cint(NNG_ECLOSED))
+      return
+    if sock.engineKind in {engPub0, engPush0}:
+      nng_aio_finish(aio, cint(NNG_ENOTSUP))
+      return
+    if sock.pendingRecvCb != nil and sock.engineKind in {engRep0, engRespondent0}:
+      nng_aio_finish(aio, cint(NNG_ESTATE))
+      return
+    if sock.engineKind == engSurveyor0 and not sock.raw and sock.recvQueue.len == 0 and
+        not sock.inSurvey(0):
+      nng_aio_finish(aio, cint(NNG_ESTATE))
+      return
+    if sock.engineKind == engReq0 and not sock.raw and sock.recvQueue.len == 0 and
+        not hasReqInFlight(sock, 0):
+      nng_aio_finish(aio, cint(NNG_ESTATE))
+      return
+    if sock.recvQueue.len > 0:
+      var msg: ptr NngMsgObj = nil
+      let res = nng_recvmsg(s, addr msg, 2)
+      if res == 0:
+        nng_aio_set_msg(aio, msg)
+      nng_aio_finish(aio, res)
+    else:
+      aio.finished = false
+      aio.err = 0
+      sock.pendingRecvCb = proc(res: int, msg: SpMsg) =
+        if res == 0:
+          let m = createShared(NngMsgObj)
+          m.header = msg.header
+          m.body = msg.body
+          m.pipeId = msg.pipeId
+          nng_aio_set_msg(aio, m)
+        nng_aio_finish(aio, cint(res))
 
   proc nng_ctx_send*(c: NngCtxObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+    if aio != nil and aio.stopped:
+      nng_aio_finish(aio, cint(NNG_ECANCELED))
+      return
+    if c.id in gClosedCtxs:
+      if aio != nil:
+        nng_aio_finish(aio, cint(NNG_ECLOSED))
+      return
     if c.id notin gContexts or aio == nil or aio.msg == nil:
       if aio != nil:
         nng_aio_finish(aio, cint(NNG_EINVAL))
+      return
+    let ctx = gContexts[c.id]
+    let sock = ctx.socket
+    if ctx.closed or sock.closed:
+      nng_aio_finish(aio, cint(NNG_ECLOSED))
+      return
+    if sock.engineKind in {engSub0, engPull0}:
+      nng_aio_finish(aio, cint(NNG_ENOTSUP))
+      return
+    if sock.engineKind == engRespondent0:
+      if ctx.ctxId notin sock.respondent0Eng.contexts and
+          (sock.respondent0Eng.reqStack.len == 0 or not sock.raw):
+        nng_aio_finish(aio, cint(NNG_ESTATE))
+        return
+      if aio.timeout == 0:
+        nng_aio_finish(aio, cint(NNG_ETIMEDOUT))
+        return
+    elif sock.engineKind == engRep0:
+      if sock.inFlight > 0:
+        if aio.timeout == 0:
+          nng_aio_finish(aio, cint(NNG_ETIMEDOUT))
+          return
+        aio.finished = false
+        aio.err = 0
+        gPendingSendAios.add(aio)
+        return
+      inc sock.inFlight
+    aio.sockId = sock.id
+    aio.ctxId = c.id
+    aio.startTime = getMonoTime().ticks div 1_000_000
+    if sock.engineKind == engReq0:
+      var i = 0
+      while i < gPendingSendAios.len:
+        let prev = gPendingSendAios[i]
+        if prev.sockId == sock.id and prev.ctxId == c.id:
+          gPendingSendAios.delete(i)
+          nng_aio_finish(prev, cint(NNG_ECANCELED))
+        else:
+          inc i
+    if sock.pipes.len == 0 and sock.engineKind in {
+      engPush0, engPair0, engPair1, engReq0
+    }:
+      if aio.timeout == 0:
+        nng_aio_finish(aio, cint(NNG_ETIMEDOUT))
+        return
+      aio.finished = false
+      aio.err = 0
+      gPendingSendAios.add(aio)
       return
     let res = nng_ctx_sendmsg(c, aio.msg, 0)
     aio.msg = nil
     nng_aio_finish(aio, res)
 
   proc nng_ctx_recv*(c: NngCtxObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+    if aio != nil and aio.stopped:
+      nng_aio_finish(aio, cint(NNG_ECANCELED))
+      return
+    if c.id in gClosedCtxs:
+      if aio != nil:
+        nng_aio_finish(aio, cint(NNG_ECLOSED))
+      return
     if c.id notin gContexts or aio == nil:
       if aio != nil:
         nng_aio_finish(aio, cint(NNG_EINVAL))
       return
-    var msg: ptr NngMsgObj = nil
-    let res = nng_ctx_recvmsg(c, addr msg, 0)
-    if res == 0:
-      nng_aio_set_msg(aio, msg)
-    nng_aio_finish(aio, res)
+    let ctx = gContexts[c.id]
+    if ctx.closed or ctx.socket.closed:
+      nng_aio_finish(aio, cint(NNG_ECLOSED))
+      return
+    if ctx.socket.engineKind in {engPub0, engPush0}:
+      nng_aio_finish(aio, cint(NNG_ENOTSUP))
+      return
+    if ctx.pendingRecvCb != nil and ctx.socket.engineKind in {engRep0, engRespondent0}:
+      nng_aio_finish(aio, cint(NNG_ESTATE))
+      return
+    if ctx.socket.engineKind == engSurveyor0 and not ctx.socket.raw and
+        ctx.recvQueue.len == 0 and not ctx.socket.inSurvey(ctx.ctxId):
+      nng_aio_finish(aio, cint(NNG_ESTATE))
+      return
+    if ctx.socket.engineKind == engReq0 and not ctx.socket.raw and ctx.recvQueue.len == 0 and
+        not hasReqInFlight(ctx.socket, c.id):
+      nng_aio_finish(aio, cint(NNG_ESTATE))
+      return
+    if ctx.recvQueue.len == 0 and ctx.socket.recvQueue.len > 0 and
+        ctx.socket.engineKind in {engRep0, engRespondent0}:
+      let msg = ctx.socket.recvQueue[0]
+      ctx.socket.recvQueue.delete(0)
+      if ctx.socket.engineKind == engRespondent0 and
+          ctx.socket.respondent0Eng.reqStack.len > 0:
+        ctx.socket.respondent0Eng.contexts[ctx.ctxId] =
+          ctx.socket.respondent0Eng.reqStack.pop()
+      elif ctx.socket.engineKind == engRep0 and ctx.socket.rep0Eng.reqStack.len > 0:
+        ctx.socket.rep0Eng.contexts[ctx.ctxId] = ctx.socket.rep0Eng.reqStack.pop()
+      ctx.recvQueue.add(msg)
+    if ctx.recvQueue.len > 0:
+      var msg: ptr NngMsgObj = nil
+      let res = nng_ctx_recvmsg(c, addr msg, 2)
+      if res == 0:
+        nng_aio_set_msg(aio, msg)
+      nng_aio_finish(aio, res)
+    else:
+      aio.finished = false
+      aio.err = 0
+      aio.sockId = ctx.socket.id
+      aio.ctxId = c.id
+      aio.startTime = getMonoTime().ticks div 1_000_000
+      ctx.pendingRecvCb = proc(res: int, msg: SpMsg) =
+        if res == 0:
+          let m = createShared(NngMsgObj)
+          m.header = msg.header
+          m.body = msg.body
+          m.pipeId = msg.pipeId
+          nng_aio_set_msg(aio, m)
+        nng_aio_finish(aio, cint(res))
 
   # ----------------------------------------------------------------------
   # Pipes & Introspection
@@ -1140,7 +1633,10 @@ when not defined(js):
   proc nng_pipe_close*(p: NngPipeObj): cint {.exportc, dynlib, cdecl.} =
     if p.id in gPipes:
       let pipe = gPipes[p.id]
+      let sock = pipe.socket
       pipe.close()
+      if sock != nil:
+        closePendingSendsForSocket(sock.id)
       return 0
     return cint(NNG_ECLOSED)
 
@@ -1150,7 +1646,7 @@ when not defined(js):
       cb: proc(p: NngPipeObj, ev: cint, arg: pointer) {.cdecl.},
       arg: pointer,
   ): cint {.exportc, dynlib, cdecl.} =
-    if s.id notin gSockets or cb == nil:
+    if s.id notin gSockets:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
     let pipeEv =
@@ -1164,10 +1660,14 @@ when not defined(js):
       else:
         return cint(NNG_EINVAL)
 
+    if cb == nil:
+      sock.pipeNotify(pipeEv, nil)
+      return 0
+
     sock.pipeNotify(
       pipeEv,
       proc(p: Pipe, e: PipeEvent) =
-        let pid = uint32(p.id)
+        let pid = uint32(p.pipeId)
         gPipes[pid] = p
         cb(NngPipeObj(id: pid), cint(ev), arg),
     )
@@ -1183,8 +1683,10 @@ when not defined(js):
     if s.id notin gSockets or name == nil or szp == nil:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
+    let optName = $name
+    if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
+      return cint(NNG_EWRITEONLY)
     try:
-      let optName = $name
       if optName in sock.options.values:
         let entry = sock.options.values[optName]
         case entry.kind
@@ -1237,8 +1739,22 @@ when not defined(js):
     if s.id notin gSockets or name == nil:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
+    let optName = $name
+    if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
+      if sock.engineKind != engSub0:
+        return cint(NNG_ENOTSUP)
+      var topic = newSeq[byte](sz)
+      if sz > 0 and val != nil:
+        copyMem(addr topic[0], val, int(sz))
+      try:
+        if optName == NNG_OPT_SUB_SUBSCRIBE:
+          sock.subscribe(topic)
+        else:
+          sock.unsubscribe(topic)
+        return 0
+      except CatchableError as e:
+        return toCError(e)
     try:
-      let optName = $name
       if optName in sock.options.values:
         let entry = sock.options.values[optName]
         case entry.kind
@@ -1264,7 +1780,7 @@ when not defined(js):
           if sz != csize_t(sizeof(int32)) or val == nil:
             return cint(NNG_EINVAL)
           let mv = cast[ptr int32](val)[]
-          sock.setOpt(optName, int(mv))
+          sock.setOpt(optName, int64(mv))
           return 0
         else:
           return cint(NNG_ENOTSUP)
@@ -1341,8 +1857,13 @@ when not defined(js):
     if s.id notin gSockets or name == nil or val == nil:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
+    let optName = $name
+    if optName == NNG_OPT_SENDFD and sock.engineKind in {engSub0, engPull0}:
+      return cint(NNG_ENOTSUP)
+    if optName == NNG_OPT_RECVFD and sock.engineKind in {engPub0, engPush0}:
+      return cint(NNG_ENOTSUP)
     try:
-      val[] = cint(sock.getInt($name))
+      val[] = cint(sock.getInt(optName))
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -1353,8 +1874,23 @@ when not defined(js):
     if s.id notin gSockets or name == nil:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
+    let optName = $name
+    if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
+      if sock.engineKind != engSub0:
+        return cint(NNG_ENOTSUP)
+      var b = newSeq[byte](sizeof(cint))
+      var v = val
+      copyMem(addr b[0], addr v, sizeof(cint))
+      try:
+        if optName == NNG_OPT_SUB_SUBSCRIBE:
+          sock.subscribe(b)
+        else:
+          sock.unsubscribe(b)
+        return 0
+      except CatchableError as e:
+        return toCError(e)
     try:
-      sock.setOpt($name, int(val))
+      sock.setOpt(optName, int(val))
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -1377,8 +1913,23 @@ when not defined(js):
     if s.id notin gSockets or name == nil:
       return cint(NNG_EINVAL)
     let sock = gSockets[s.id]
+    let optName = $name
+    if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
+      if sock.engineKind != engSub0:
+        return cint(NNG_ENOTSUP)
+      var b = newSeq[byte](sizeof(bool))
+      var v = val
+      copyMem(addr b[0], addr v, sizeof(bool))
+      try:
+        if optName == NNG_OPT_SUB_SUBSCRIBE:
+          sock.subscribe(b)
+        else:
+          sock.unsubscribe(b)
+        return 0
+      except CatchableError as e:
+        return toCError(e)
     try:
-      sock.setOpt($name, val)
+      sock.setOpt(optName, val)
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -1622,31 +2173,64 @@ when not defined(js):
   # Device (raw forwarder)
   # ----------------------------------------------------------------------
 
-  proc nng_device*(
-      s1: NngSocketObj, s2: NngSocketObj
-  ): cint {.exportc, dynlib, cdecl.} =
-    if s1.id notin gSockets or s2.id notin gSockets:
-      return cint(NNG_EINVAL)
-    let sock1 = gSockets[s1.id]
-    let sock2 = gSockets[s2.id]
-    try:
-      discard device(sock1, sock2)
-      return 0
-    except CatchableError as e:
-      return toCError(e)
-
   proc nng_device_aio*(
       aio: ptr NngAioObj, s1: NngSocketObj, s2: NngSocketObj
   ) {.exportc, dynlib, cdecl.} =
-    if s1.id notin gSockets or s2.id notin gSockets:
-      if aio != nil:
-        nng_aio_finish(aio, cint(NNG_EINVAL))
+    if aio == nil:
       return
-    let sock1 = gSockets[s1.id]
-    let sock2 = gSockets[s2.id]
-    discard device(sock1, sock2)
-    if aio != nil:
-      nng_aio_finish(aio, 0)
+    if s1.id notin gSockets and s2.id notin gSockets:
+      nng_aio_finish(aio, cint(NNG_EINVAL))
+      return
+    let sock1 =
+      if s1.id in gSockets:
+        gSockets[s1.id]
+      else:
+        nil
+    let sock2 =
+      if s2.id in gSockets:
+        gSockets[s2.id]
+      else:
+        nil
+    let src = if sock1 != nil: sock1 else: sock2
+    let dst = if sock2 != nil: sock2 else: sock1
+    if not src.raw or not dst.raw:
+      nng_aio_finish(aio, cint(NNG_EINVAL))
+      return
+
+    aio.finished = false
+    aio.err = 0
+    if src == dst:
+      src.deviceHook = proc(msg: SpMsg) =
+        src.sendMsg(msg)
+      while src.recvQueue.len > 0:
+        let m = src.recvQueue[0]
+        src.recvQueue.delete(0)
+        src.sendMsg(m)
+    else:
+      src.deviceHook = proc(msg: SpMsg) =
+        dst.sendMsg(msg)
+      dst.deviceHook = proc(msg: SpMsg) =
+        src.sendMsg(msg)
+      while src.recvQueue.len > 0:
+        let m = src.recvQueue[0]
+        src.recvQueue.delete(0)
+        dst.sendMsg(m)
+      while dst.recvQueue.len > 0:
+        let m = dst.recvQueue[0]
+        dst.recvQueue.delete(0)
+        src.sendMsg(m)
+
+  proc nng_device*(
+      s1: NngSocketObj, s2: NngSocketObj
+  ): cint {.exportc, dynlib, cdecl.} =
+    var aio: ptr NngAioObj = nil
+    let rv = nng_aio_alloc(addr aio, nil, nil)
+    if rv != 0:
+      return rv
+    nng_device_aio(aio, s1, s2)
+    nng_aio_wait(aio)
+    result = nng_aio_result(aio)
+    nng_aio_free(aio)
 
   # ----------------------------------------------------------------------
   # TLS Configuration

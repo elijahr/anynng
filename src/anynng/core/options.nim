@@ -140,7 +140,7 @@ const
   NNG_OPT_MAXTTL* = "ttl-max"
   NNG_OPT_RECONNMINT* = "reconnect-time-min"
   NNG_OPT_RECONNMAXT* = "reconnect-time-max"
-  NNG_OPT_TCP_BOUND_PORT* = "tcp:bound-port"
+  NNG_OPT_TCP_BOUND_PORT* = "tcp-bound-port"
   NNG_OPT_TCP_NODELAY* = "tcp-nodelay"
   NNG_OPT_TCP_KEEPALIVE* = "tcp-keepalive"
   NNG_OPT_TLS_CONFIG* = "tls-config"
@@ -152,6 +152,9 @@ const
   NNG_OPT_TLS_PEER_CN* = "tls-peer-cn"
   NNG_OPT_TLS_PEER_ALT_NAMES* = "tls-peer-alt-names"
   NNG_OPT_PAIR1_POLY* = "pair1:polyamorous"
+  NNG_OPT_PAIR1_TEST_INJECT_HEADER* = "pair1_test_inject_header"
+  NNG_OPT_RECVFD* = "recv-fd"
+  NNG_OPT_SENDFD* = "send-fd"
   NNG_OPT_SUB_SUBSCRIBE* = "sub:subscribe"
   NNG_OPT_SUB_UNSUBSCRIBE* = "sub:unsubscribe"
   NNG_OPT_SUB_PREFNEW* = "sub:prefnew"
@@ -255,6 +258,9 @@ proc initDefaultDescriptors() =
   registerOption(NNG_OPT_RECONNMINT, optKindDuration, optRw, {entSocket, entDialer})
   registerOption(NNG_OPT_RECONNMAXT, optKindDuration, optRw, {entSocket, entDialer})
   registerOption(NNG_OPT_TCP_BOUND_PORT, optKindInt, optRo, {entListener})
+  registerOption("tcp:bound-port", optKindInt, optRo, {entListener})
+  registerOption(NNG_OPT_RECVFD, optKindInt, optRo, {entSocket})
+  registerOption(NNG_OPT_SENDFD, optKindInt, optRo, {entSocket})
   registerOption(
     NNG_OPT_TCP_NODELAY, optKindBool, optRw, {entSocket, entDialer, entListener}
   )
@@ -272,6 +278,7 @@ proc initDefaultDescriptors() =
   registerOption(NNG_OPT_TLS_PEER_CN, optKindString, optRo, {entPipe})
   registerOption(NNG_OPT_TLS_PEER_ALT_NAMES, optKindString, optRo, {entPipe})
   registerOption(NNG_OPT_PAIR1_POLY, optKindBool, optRw, {entSocket})
+  registerOption(NNG_OPT_PAIR1_TEST_INJECT_HEADER, optKindBool, optRw, {entSocket})
   registerOption(NNG_OPT_SUB_SUBSCRIBE, optKindString, optWo, {entSocket, entContext})
   registerOption(NNG_OPT_SUB_UNSUBSCRIBE, optKindString, optWo, {entSocket, entContext})
   registerOption(NNG_OPT_SUB_PREFNEW, optKindBool, optRw, {entSocket, entContext})
@@ -297,8 +304,8 @@ proc newOptionStore*(target: OptionTarget): OptionStore =
   # Set default values
   case target
   of entSocket, entContext:
-    result.values[NNG_OPT_RECVBUF] = initOptionValue(128)
-    result.values[NNG_OPT_SENDBUF] = initOptionValue(128)
+    result.values[NNG_OPT_RECVBUF] = initOptionValue(0)
+    result.values[NNG_OPT_SENDBUF] = initOptionValue(0)
     result.values[NNG_OPT_RECVTIMEO] = initOptionValueDuration(-1) # infinite
     result.values[NNG_OPT_SENDTIMEO] = initOptionValueDuration(-1) # infinite
     result.values[NNG_OPT_MAXTTL] = initOptionValue(8)
@@ -369,10 +376,10 @@ proc getBool*(store: OptionStore, name: string): bool =
 
 proc setInt*(store: OptionStore, name: string, val: int) =
   store.validateAccess(name, isSet = true, optKindInt)
-  if name == NNG_OPT_MAXTTL and (val < 1 or val > 255):
-    raise newNngError(NNG_EINVAL, "TTL must be in range 1..255")
-  if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and val < 0:
-    raise newNngError(NNG_EINVAL, "Buffer size cannot be negative")
+  if name == NNG_OPT_MAXTTL and (val < 1 or val > 15):
+    raise newNngError(NNG_EINVAL, "MAXTTL must be in range 1..15")
+  if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and (val < 0 or val > 8192):
+    raise newNngError(NNG_EINVAL, "Buffer size must be in range 0..8192")
   store.values[name] = initOptionValue(val)
 
 proc getInt*(store: OptionStore, name: string): int =

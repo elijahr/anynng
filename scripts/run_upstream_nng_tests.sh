@@ -19,6 +19,9 @@ fi
 echo "Building libanynng.dylib from src/anynng/c_api.nim..."
 mkdir -p dist
 nim c --app:lib -d:release --out:dist/libanynng.dylib src/anynng/c_api.nim
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    install_name_tool -id @rpath/libanynng.dylib dist/libanynng.dylib 2>/dev/null || true
+fi
 
 # 3. Setup compiler and include paths
 NUTS_INC="-I$NNG_DIR/include -I$NNG_DIR/src -I$NNG_DIR/src/testing -Itests/upstream_shim"
@@ -77,11 +80,11 @@ echo "  Passed:         $PASSED_COUNT"
 echo "  With Failures:  $FAILED_COUNT"
 echo "============================================================"
 
-# Verification is successful when all suites compile, link, and run against libanynng.dylib
-if [ "$PASSED_COUNT" -gt 0 ] || [ "$TOTAL" -eq 12 ]; then
-    echo "✓ Upstream NUTS C-ABI specification test harness executed cleanly."
+# Strict assertion: 100% of suites must pass with 0 failures
+if [ "$FAILED_COUNT" -eq 0 ] && [ "$PASSED_COUNT" -eq "$TOTAL" ]; then
+    echo "✓ Upstream NUTS C-ABI specification test harness executed cleanly with 100% PASS across all $TOTAL suites."
     exit 0
 else
-    echo "✗ Upstream test execution failed completely."
+    echo "✗ Upstream test execution failed: $FAILED_COUNT suites had failures."
     exit 1
 fi

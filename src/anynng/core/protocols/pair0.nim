@@ -28,7 +28,9 @@ proc step*(eng: var Pair0Engine, ev: EngineEvent): seq[EngineAction] =
       eng.pipeId = 0
   of evUserSend:
     if not eng.hasPipe:
-      result.add(EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrClosed))
+      result.add(
+        EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrTimedOut)
+      )
     else:
       var frame = ev.msg.body
       result.add(EngineAction(kind: actSendPipe, pipeId: eng.pipeId, rawFrame: frame))

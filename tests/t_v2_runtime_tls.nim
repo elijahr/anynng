@@ -10,11 +10,16 @@ when not defined(js):
     for i in 0 ..< b.len:
       result[i] = char(b[i])
 
+  proc strToBytes(s: string): seq[byte] =
+    result = newSeq[byte](s.len)
+    for i in 0 ..< s.len:
+      result[i] = byte(s[i])
+
   suite "NNG Strongly-Typed Option Registry & Error Semantics":
     test "Valid get and set on Socket options":
       let sock = openReq0()
-      sock.setOpt(NNG_OPT_MAXTTL, 16)
-      check sock.getInt(NNG_OPT_MAXTTL) == 16
+      sock.setOpt(NNG_OPT_MAXTTL, 15)
+      check sock.getInt(NNG_OPT_MAXTTL) == 15
 
       sock.setOpt(NNG_OPT_RECVTIMEO, 2500'i64)
       check sock.getMs(NNG_OPT_RECVTIMEO) == 2500'i64
@@ -204,9 +209,17 @@ when not defined(js):
       check bytesToStr(msg3.body) == "req-from-ctx3"
 
       # Server replies in reverse order
-      repSock.send("rep-to-ctx3")
-      repSock.send("rep-to-ctx2")
-      repSock.send("rep-to-ctx1")
+      var r3 = initSpMsg(strToBytes("rep-to-ctx3"))
+      r3.header = msg3.header
+      repSock.sendMsg(r3)
+
+      var r2 = initSpMsg(strToBytes("rep-to-ctx2"))
+      r2.header = msg2.header
+      repSock.sendMsg(r2)
+
+      var r1 = initSpMsg(strToBytes("rep-to-ctx1"))
+      r1.header = msg1.header
+      repSock.sendMsg(r1)
 
       # Each context receives only its own reply
       check ctx3.recvStr() == "rep-to-ctx3"

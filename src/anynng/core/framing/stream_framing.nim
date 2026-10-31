@@ -104,8 +104,8 @@ proc feed*(
     return
   let oldLen = dec.buf.len
   dec.buf.setLen(oldLen + chunk.len)
-  for i in 0 ..< chunk.len:
-    dec.buf[oldLen + i] = chunk[i]
+  if chunk.len > 0:
+    copyMem(addr dec.buf[oldLen], unsafeAddr chunk[0], chunk.len)
 
   let hdrLen = if dec.hasTypeByte: 9 else: 8
   while dec.buf.len >= hdrLen:
@@ -118,7 +118,7 @@ proc feed*(
 
     let lenOffset = if dec.hasTypeByte: 1 else: 0
     let msgLen = getBe64(dec.buf, lenOffset)
-    if msgLen > dec.recvMax:
+    if dec.recvMax > 0 and msgLen > dec.recvMax:
       # Exceeded max receive size (HIGH-01)
       dec.buf.setLen(0)
       raise newException(
@@ -132,14 +132,13 @@ proc feed*(
       break
 
     var frame = newSeq[byte](frameLen)
-    for i in 0 ..< frameLen:
-      frame[i] = dec.buf[hdrLen + i]
+    if frameLen > 0:
+      copyMem(addr frame[0], addr dec.buf[hdrLen], frameLen)
 
     # Shift remaining buffer
     let remaining = dec.buf.len - (hdrLen + frameLen)
     if remaining > 0:
-      for i in 0 ..< remaining:
-        dec.buf[i] = dec.buf[hdrLen + frameLen + i]
+      moveMem(addr dec.buf[0], addr dec.buf[hdrLen + frameLen], remaining)
       dec.buf.setLen(remaining)
     else:
       dec.buf.setLen(0)

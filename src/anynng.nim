@@ -8,7 +8,7 @@ import anynng/core/protocols/[pair0, pair1, pubsub0, reqrep0, pipeline0, survey0
 import anynng/transports/inproc
 
 when not defined(js):
-  import std/[asyncdispatch, monotimes, times, net, nativesockets]
+  import std/[asyncdispatch, monotimes, times, net, nativesockets, posix, os]
   import anynng/transports/[native_tcp, native_ipc, native_udp, native_ws, native_tls]
   export native_tcp, native_ipc, native_udp, native_ws, native_tls
 else:
@@ -18,6 +18,12 @@ else:
 export types, options, tls, endian, url, stream_framing, ws_framing, udp_framing
 
 const projectVersion* = "0.0.1"
+
+proc currentNowMs*(): int64 =
+  when defined(js):
+    int64(jsNow())
+  else:
+    getMonoTime().ticks div 1_000_000
 
 type
   EngineVariantKind* = enum
@@ -34,6 +40,7 @@ type
     engBus0
 
   Socket* = ref object
+    id*: uint32
     proto*: SpProto
     engineKind*: EngineVariantKind
     pair0Eng*: Pair0Engine
@@ -49,12 +56,22 @@ type
     bus0Eng*: Bus0Engine
     pipes*: Table[PipeId, Pipe]
     recvQueue*: seq[SpMsg]
+    sendQueue*: seq[SpMsg]
+    inFlight*: int
+    lastErr*: cint
     onRecvCb*: proc(msg: SpMsg) {.closure.}
+    pendingRecvCb*: proc(res: int, msg: SpMsg) {.closure.}
+    deviceHook*: proc(msg: SpMsg) {.closure.}
     closed*: bool
     raw*: bool
     options*: OptionStore
     pipeCallbacks*: Table[PipeEvent, PipeNotifyCb]
     contexts*: Table[uint32, Context]
+    when not defined(js):
+      recvFds*: array[2, cint]
+      sendFds*: array[2, cint]
+      recvFdReadable*: bool
+      sendFdWritable*: bool
 
   Dialer* = ref object
     socket*: Socket
@@ -80,10 +97,31 @@ type
     ctxId*: uint32
     options*: OptionStore
     closed*: bool
+    lastErr*: cint
     recvQueue*: seq[SpMsg]
     onRecvCb*: proc(msg: SpMsg) {.closure.}
+    pendingRecvCb*: proc(res: int, msg: SpMsg) {.closure.}
+    sub0Topics*: seq[seq[byte]]
+
+func matchesTopicList*(topics: seq[seq[byte]], frame: openArray[byte]): bool =
+  if topics.len == 0:
+    return false
+  for sub in topics:
+    if sub.len == 0:
+      return true
+    if frame.len >= sub.len:
+      var matches = true
+      for i in 0 ..< sub.len:
+        if frame[i] != sub[i]:
+          matches = false
+          break
+      if matches:
+        return true
+  return false
 
 var gNextCtxId: uint32 = 1'u32
+var gOnPipeHook*: proc() {.closure.}
+var gPendingAioCountProc*: proc(sockId: uint32): int {.closure.}
 
 proc allocCtxId(): uint32 =
   result = gNextCtxId
@@ -96,6 +134,8 @@ proc attachCustomPipe*(s: Socket, pipe: Pipe)
 proc detachCustomPipe*(s: Socket, pipeId: PipeId)
 proc feedPipeFrame*(s: Socket, pipeId: PipeId, frame: openArray[byte])
 proc close*(s: Socket)
+proc updateRecvFd*(s: Socket)
+proc updateSendFd*(s: Socket)
 
 # Socket Implementation
 proc newSocket*(proto: SpProto, raw: bool = false): Socket =
@@ -104,16 +144,33 @@ proc newSocket*(proto: SpProto, raw: bool = false): Socket =
   result.raw = raw
   result.closed = false
   result.recvQueue = @[]
+  result.sendQueue = @[]
+  result.inFlight = 0
   result.pipes = initTable[PipeId, Pipe]()
   result.options = newOptionStore(entSocket)
   result.pipeCallbacks = initTable[PipeEvent, PipeNotifyCb]()
   result.contexts = initTable[uint32, Context]()
+
+  when not defined(js):
+    discard posix.pipe(result.recvFds)
+    discard posix.pipe(result.sendFds)
+    for fd in [
+      result.recvFds[0], result.recvFds[1], result.sendFds[0], result.sendFds[1]
+    ]:
+      let fl = posix.fcntl(fd, F_GETFL, 0)
+      discard posix.fcntl(fd, F_SETFL, fl or O_NONBLOCK)
+    result.recvFdReadable = false
+    result.sendFdWritable = false
 
   result.options.setIntInternal(NNG_OPT_PROTO, int(proto))
   result.options.setStringInternal(NNG_OPT_PROTONAME, protoName(proto))
   result.options.setIntInternal(NNG_OPT_PEER, int(peerProto(proto)))
   result.options.setStringInternal(NNG_OPT_PEERNAME, protoName(peerProto(proto)))
   result.options.setBoolInternal(NNG_OPT_RAW, raw)
+
+  if proto in {spPair0, spPair1, spPush0}:
+    result.options.setIntInternal(NNG_OPT_SENDBUF, 0)
+    result.options.setIntInternal(NNG_OPT_RECVBUF, 0)
 
   case proto
   of spPair0:
@@ -150,11 +207,86 @@ proc newSocket*(proto: SpProto, raw: bool = false): Socket =
     result.engineKind = engBus0
     result.bus0Eng = initBus0Engine(raw)
 
+  result.updateRecvFd()
+  result.updateSendFd()
+
 proc pipeNotify*(s: Socket, ev: PipeEvent, cb: PipeNotifyCb) =
-  s.pipeCallbacks[ev] = cb
+  if cb == nil:
+    s.pipeCallbacks.del(ev)
+  else:
+    s.pipeCallbacks[ev] = cb
+
+proc inSurvey*(s: Socket, ctxId: uint32 = 0): bool =
+  if s.engineKind == engSurveyor0:
+    if ctxId in s.surveyor0Eng.contexts:
+      let st = s.surveyor0Eng.contexts[ctxId]
+      if st.inSurvey:
+        if currentNowMs() >= st.deadlineMs:
+          s.surveyor0Eng.contexts[ctxId].inSurvey = false
+          s.surveyor0Eng.surveyToCtx.del(st.surveyId)
+          return false
+        return true
+    false
+  else:
+    false
 
 proc pipeCount*(s: Socket): int =
   s.pipes.len
+
+proc updateRecvFd*(s: Socket) =
+  when not defined(js):
+    let shouldBeReadable =
+      s.recvQueue.len > 0 and (s.engineKind != engPull0 or s.pipes.len > 0)
+    if shouldBeReadable and not s.recvFdReadable:
+      var b: byte = 1
+      discard posix.write(s.recvFds[1], addr b, 1)
+      s.recvFdReadable = true
+    elif not shouldBeReadable and s.recvFdReadable:
+      var buf: array[64, byte]
+      while posix.read(s.recvFds[0], addr buf[0], 64) > 0:
+        discard
+      s.recvFdReadable = false
+
+proc updateSendFd*(s: Socket) =
+  when not defined(js):
+    let pendingAioCount =
+      if gPendingAioCountProc != nil:
+        gPendingAioCountProc(s.id)
+      else:
+        0
+    let sendBuf = s.options.getInt(NNG_OPT_SENDBUF)
+    let totalUsed = s.inFlight + s.sendQueue.len + pendingAioCount
+    let canSendProto =
+      case s.engineKind
+      of engReq0:
+        s.pipes.len > 0 and (s.raw or totalUsed < (s.pipes.len + sendBuf))
+      of engRep0:
+        s.raw or s.rep0Eng.reqStack.len > 0 or s.rep0Eng.contexts.len > 0
+      of engRespondent0:
+        s.raw or s.respondent0Eng.reqStack.len > 0 or s.respondent0Eng.contexts.len > 0
+      of engPush0:
+        s.pipes.len > 0 or sendBuf > 0
+      else:
+        true
+    let totalCap =
+      if s.engineKind == engReq0:
+        (if s.pipes.len > 0: s.pipes.len else: 0) + sendBuf
+      else:
+        (if s.pipes.len > 0: s.pipes.len * 2 else: 0) + sendBuf
+    let shouldBeWritable =
+      not s.closed and canSendProto and (
+        s.engineKind in {engPub0, engSurveyor0} or
+        (totalCap > 0 and totalUsed < totalCap)
+      )
+    if shouldBeWritable and not s.sendFdWritable:
+      var b: byte = 1
+      discard posix.write(s.sendFds[1], addr b, 1)
+      s.sendFdWritable = true
+    elif not shouldBeWritable and s.sendFdWritable:
+      var buf: array[64, byte]
+      while posix.read(s.sendFds[0], addr buf[0], 64) > 0:
+        discard
+      s.sendFdWritable = false
 
 proc executeActions*(s: Socket, actions: seq[EngineAction]) =
   for act in actions:
@@ -167,47 +299,129 @@ proc executeActions*(s: Socket, actions: seq[EngineAction]) =
         let p = s.pipes[act.pipeId]
         s.pipes.del(act.pipeId)
         p.close()
+        s.updateSendFd()
     of actDeliverRecv:
+      var msg = act.msg
+      if msg.pipeId == 0 and act.pipeId != 0:
+        msg.pipeId = act.pipeId
+      if s.deviceHook != nil:
+        s.deviceHook(msg)
+        s.updateRecvFd()
+        s.updateSendFd()
+        continue
       var delivered = false
       if act.ctxId != 0 and act.ctxId in s.contexts:
         let ctx = s.contexts[act.ctxId]
         if not ctx.closed:
-          if ctx.onRecvCb != nil:
+          if ctx.pendingRecvCb != nil:
+            let cb = ctx.pendingRecvCb
+            ctx.pendingRecvCb = nil
+            cb(0, msg)
+            delivered = true
+          elif ctx.onRecvCb != nil:
             let cb = ctx.onRecvCb
             ctx.onRecvCb = nil
-            cb(act.msg)
+            cb(msg)
             delivered = true
           else:
             let maxBuf = ctx.options.getInt(NNG_OPT_RECVBUF)
-            if ctx.recvQueue.len < maxBuf:
-              ctx.recvQueue.add(act.msg)
+            if maxBuf == 0 or ctx.recvQueue.len < maxBuf:
+              ctx.recvQueue.add(msg)
               delivered = true
+      elif s.engineKind == engSub0:
+        # Fan out to all contexts whose topics match
+        for ctx in s.contexts.values:
+          if not ctx.closed and matchesTopicList(ctx.sub0Topics, msg.body):
+            if ctx.pendingRecvCb != nil:
+              let cb = ctx.pendingRecvCb
+              ctx.pendingRecvCb = nil
+              cb(0, msg)
+            elif ctx.onRecvCb != nil:
+              let cb = ctx.onRecvCb
+              ctx.onRecvCb = nil
+              cb(msg)
+            else:
+              let maxBuf = ctx.options.getInt(NNG_OPT_RECVBUF)
+              if maxBuf == 0 or ctx.recvQueue.len < maxBuf:
+                ctx.recvQueue.add(msg)
+              elif ctx.options.getBool(NNG_OPT_SUB_PREFNEW):
+                ctx.recvQueue.delete(0)
+                ctx.recvQueue.add(msg)
+        if gOnPipeHook != nil:
+          gOnPipeHook()
+      elif s.engineKind in {engRep0, engRespondent0} and s.contexts.len > 0:
+        var targetCtx: Context = nil
+        for ctx in s.contexts.values:
+          if not ctx.closed and (ctx.pendingRecvCb != nil or ctx.onRecvCb != nil):
+            targetCtx = ctx
+            break
+        if targetCtx != nil:
+          if s.engineKind == engRespondent0 and s.respondent0Eng.reqStack.len > 0:
+            let st = s.respondent0Eng.reqStack.pop()
+            s.respondent0Eng.contexts[targetCtx.ctxId] = st
+          elif s.engineKind == engRep0 and s.rep0Eng.reqStack.len > 0:
+            let st = s.rep0Eng.reqStack.pop()
+            s.rep0Eng.contexts[targetCtx.ctxId] = st
+          if targetCtx.pendingRecvCb != nil:
+            let cb = targetCtx.pendingRecvCb
+            targetCtx.pendingRecvCb = nil
+            cb(0, msg)
+            delivered = true
+          elif targetCtx.onRecvCb != nil:
+            let cb = targetCtx.onRecvCb
+            targetCtx.onRecvCb = nil
+            cb(msg)
+            delivered = true
 
-      if not delivered:
-        if s.onRecvCb != nil:
-          let cb = s.onRecvCb
-          s.onRecvCb = nil
-          cb(act.msg)
-        else:
-          let maxBuf = s.options.getInt(NNG_OPT_RECVBUF)
-          if s.recvQueue.len < maxBuf:
-            s.recvQueue.add(act.msg)
-          elif s.engineKind == engSub0 and s.options.getBool(NNG_OPT_SUB_PREFNEW):
-            s.recvQueue.delete(0)
-            s.recvQueue.add(act.msg)
+      if s.engineKind != engSub0 or s.sub0Eng.matchesTopic(msg.body):
+        if not delivered:
+          if s.pendingRecvCb != nil:
+            let cb = s.pendingRecvCb
+            s.pendingRecvCb = nil
+            cb(0, msg)
+          elif s.onRecvCb != nil:
+            let cb = s.onRecvCb
+            s.onRecvCb = nil
+            cb(msg)
+          else:
+            let maxBuf = s.options.getInt(NNG_OPT_RECVBUF)
+            if maxBuf == 0 or s.recvQueue.len < maxBuf:
+              s.recvQueue.add(msg)
+            elif s.engineKind == engSub0 and s.options.getBool(NNG_OPT_SUB_PREFNEW):
+              s.recvQueue.delete(0)
+              s.recvQueue.add(msg)
+      s.updateRecvFd()
+      s.updateSendFd()
     of actFinishSend:
-      discard
+      s.updateSendFd()
     of actFailContext:
       if act.err != spOk:
         let nngErrCode =
           case act.err
           of spErrClosed: NNG_ECLOSED
           of spErrTimedOut: NNG_ETIMEDOUT
-          of spErrNotSupported, spErrProto: NNG_ENOTSUP
+          of spErrProto: NNG_EPROTO
+          of spErrNotSupported: NNG_ENOTSUP
           of spErrCanceled: NNG_ECANCELED
           of spErrMsgSize: NNG_EMSGSIZE
+          of spErrState: NNG_ESTATE
+          of spErrConnReset: NNG_ECONNRESET
           else: NNG_EINVAL
-        raise newNngError(nngErrCode, "Operation rejected by protocol: " & $act.err)
+        if act.ctxId != 0 and act.ctxId in s.contexts:
+          let ctx = s.contexts[act.ctxId]
+          if act.err != spErrCanceled:
+            ctx.lastErr = cint(nngErrCode)
+          if ctx.pendingRecvCb != nil:
+            let cb = ctx.pendingRecvCb
+            ctx.pendingRecvCb = nil
+            cb(nngErrCode, SpMsg())
+        else:
+          if act.err != spErrCanceled:
+            s.lastErr = cint(nngErrCode)
+          if s.pendingRecvCb != nil:
+            let cb = s.pendingRecvCb
+            s.pendingRecvCb = nil
+            cb(nngErrCode, SpMsg())
 
 proc stepEngine*(s: Socket, ev: EngineEvent): seq[EngineAction] =
   case s.engineKind
@@ -257,18 +471,38 @@ proc attachCustomPipe*(s: Socket, pipe: Pipe) =
   let ev = EngineEvent(kind: evPipeAdded, pipeId: pid)
   let actions = s.stepEngine(ev)
   s.executeActions(actions)
+  s.updateSendFd()
+  if s.lastErr != 0:
+    let err = s.lastErr
+    s.lastErr = 0
+    raise newNngError(err, "Socket send failed: " & $err)
+
+  # Flush send queue if any
+  while s.sendQueue.len > 0 and s.pipes.len > 0:
+    let msg = s.sendQueue[0]
+    s.sendQueue.delete(0)
+    let evSend =
+      EngineEvent(kind: evUserSend, ctxId: 0, msg: msg, nowMs: currentNowMs())
+    let sendActions = s.stepEngine(evSend)
+    s.executeActions(sendActions)
 
   # NNG_PIPE_EV_ADD_POST hook
   if pipeEvAddPost in s.pipeCallbacks:
     s.pipeCallbacks[pipeEvAddPost](pipe, pipeEvAddPost)
 
+  if gOnPipeHook != nil:
+    gOnPipeHook()
+
 proc detachCustomPipe*(s: Socket, pipeId: PipeId) =
   if pipeId in s.pipes:
     let p = s.pipes[pipeId]
     s.pipes.del(pipeId)
+    s.inFlight = 0
     let ev = EngineEvent(kind: evPipeRemoved, pipeId: pipeId)
     let actions = s.stepEngine(ev)
     s.executeActions(actions)
+    s.updateSendFd()
+    s.updateRecvFd()
 
     # NNG_PIPE_EV_REM_POST hook
     if pipeEvRemPost in s.pipeCallbacks:
@@ -277,11 +511,31 @@ proc detachCustomPipe*(s: Socket, pipeId: PipeId) =
 proc feedPipeFrame*(s: Socket, pipeId: PipeId, frame: openArray[byte]) =
   if s.closed:
     return
-  let ev = EngineEvent(kind: evPipeMessage, pipeId: pipeId, rawFrame: @frame)
+  let maxRecv = s.options.getInt(NNG_OPT_RECVBUF)
+  var hasWaiting = s.pendingRecvCb != nil or s.onRecvCb != nil
+  if not hasWaiting and s.contexts.len > 0:
+    for ctx in s.contexts.values:
+      if not ctx.closed and (ctx.pendingRecvCb != nil or ctx.onRecvCb != nil):
+        hasWaiting = true
+        break
+  if not hasWaiting and maxRecv > 0 and s.recvQueue.len >= maxRecv:
+    if s.engineKind == engSub0 and
+        (s.options.getBool(NNG_OPT_SUB_PREFNEW) or s.contexts.len > 0):
+      discard
+    elif s.engineKind in {engPub0, engSub0} or
+        (s.engineKind == engPair1 and s.pair1Eng.polyamorous):
+      return
+    else:
+      raise newNngError(NNG_ETIMEDOUT, "Receive buffer full")
+  let ev = EngineEvent(
+    kind: evPipeMessage, pipeId: pipeId, rawFrame: @frame, nowMs: currentNowMs()
+  )
   let actions = s.stepEngine(ev)
   s.executeActions(actions)
 
-proc attachEndpoint(s: Socket, ep: InprocEndpoint) =
+proc attachEndpoint(
+    s: Socket, ep: InprocEndpoint, dialerPtr: pointer = nil, listenerPtr: pointer = nil
+) =
   let pid = ep.pipeId
   ep.onMessage = proc(rawFrame: seq[byte]) =
     s.feedPipeFrame(pid, rawFrame)
@@ -293,11 +547,32 @@ proc attachEndpoint(s: Socket, ep: InprocEndpoint) =
     pid,
     s.proto,
     proc(data: openArray[byte]) =
-      ep.send(data),
+      ep.send(data)
+      inc s.inFlight
+      s.updateSendFd(),
     proc() =
       ep.close(),
   )
+  pipe.sockPtr = cast[pointer](s)
+  pipe.dialerPtr = dialerPtr
+  pipe.listenerPtr = listenerPtr
+  pipe.drainImpl = proc() =
+    if ep.peer != nil and ep.peer.pipe != nil:
+      let peerPipe = ep.peer.pipe
+      if peerPipe.sockPtr != nil:
+        let peerSock = cast[Socket](peerPipe.sockPtr)
+        if peerSock.inFlight > 0:
+          dec peerSock.inFlight
+        peerSock.updateSendFd()
+        if gOnPipeHook != nil:
+          gOnPipeHook()
+  ep.pipe = pipe
   s.attachCustomPipe(pipe)
+  if ep.recvBuf.len > 0:
+    let pending = ep.recvBuf
+    ep.recvBuf = @[]
+    for f in pending:
+      s.feedPipeFrame(pid, f)
 
 # Option Methods for Socket
 proc getOpt*(s: Socket, name: string): OptionValue =
@@ -309,12 +584,38 @@ proc setOpt*(s: Socket, name: string, val: bool) =
   s.options.setBool(name, val)
   if name == NNG_OPT_PAIR1_POLY and s.engineKind == engPair1:
     s.pair1Eng.polyamorous = val
+  elif name == NNG_OPT_PAIR1_TEST_INJECT_HEADER and s.engineKind == engPair1:
+    s.pair1Eng.injectHeader = val
 
 proc setOpt*(s: Socket, name: string, val: int) =
+  if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and
+      s.engineKind in {engPub0, engSub0, engBus0} and val == 0:
+    raise newNngError(NNG_EINVAL, "Buffer size 0 not supported on pub/sub/bus")
   s.options.setInt(name, val)
-  if name == NNG_OPT_MAXTTL:
-    # Propagate to engines
-    discard
+  if name == NNG_OPT_SENDBUF:
+    if val == 0:
+      s.sendQueue.setLen(0)
+    elif s.sendQueue.len > val:
+      s.sendQueue.setLen(val)
+    s.updateSendFd()
+  elif name == NNG_OPT_MAXTTL:
+    if s.engineKind == engRep0:
+      s.rep0Eng.maxTtl = uint32(val)
+    elif s.engineKind == engRespondent0:
+      s.respondent0Eng.maxTtl = uint32(val)
+    elif s.engineKind == engPair1:
+      s.pair1Eng.maxTtl = uint32(val)
+  elif name == NNG_OPT_REQ_RESENDTIME and s.engineKind == engReq0:
+    s.req0Eng.resendTimeMs = int64(val)
+  elif name == NNG_OPT_SURVEYOR_SURVEYTIME and s.engineKind == engSurveyor0:
+    s.surveyor0Eng.surveyTimeMs = int64(val)
+  elif name == NNG_OPT_RECVBUF:
+    if val == 0:
+      s.recvQueue.setLen(0)
+      s.updateRecvFd()
+    elif s.recvQueue.len > val:
+      s.recvQueue.setLen(val)
+      s.updateRecvFd()
 
 proc setOpt*(s: Socket, name: string, val: int64) =
   s.options.setMs(name, val)
@@ -345,9 +646,16 @@ proc setOpt*(s: Socket, name: string, val: string) =
     s.options.setString(name, val)
 
 proc getBool*(s: Socket, name: string): bool =
+  if name == NNG_OPT_PAIR1_POLY and s.engineKind == engPair1:
+    return s.pair1Eng.polyamorous
   s.options.getBool(name)
 
 proc getInt*(s: Socket, name: string): int =
+  when not defined(js):
+    if name == NNG_OPT_RECVFD:
+      return int(s.recvFds[0])
+    elif name == NNG_OPT_SENDFD:
+      return int(s.sendFds[0])
   s.options.getInt(name)
 
 proc getMs*(s: Socket, name: string): int64 =
@@ -361,8 +669,10 @@ proc getString*(s: Socket, name: string): string =
 
 # Context Implementation
 proc openContext*(s: Socket): Context =
-  if s.engineKind in {engPair0, engPair1, engPush0, engPull0, engBus0}:
+  if s.engineKind in {engPair0, engPair1, engPub0, engPush0, engPull0, engBus0}:
     raise newNngError(NNG_ENOTSUP, "Contexts are not supported on this protocol")
+  if s.engineKind == engSub0:
+    s.sub0Eng.hasContexts = true
   let cid = allocCtxId()
   new(result)
   result.socket = s
@@ -375,15 +685,53 @@ proc openContext*(s: Socket): Context =
 proc close*(ctx: Context) =
   if not ctx.closed:
     ctx.closed = true
+    if ctx.pendingRecvCb != nil:
+      let cb = ctx.pendingRecvCb
+      ctx.pendingRecvCb = nil
+      cb(NNG_ECLOSED, SpMsg())
     if ctx.socket != nil and ctx.ctxId in ctx.socket.contexts:
       ctx.socket.contexts.del(ctx.ctxId)
+
+proc subscribe*(ctx: Context, topic: openArray[byte]) =
+  let t = @topic
+  if t notin ctx.sub0Topics:
+    ctx.sub0Topics.add(t)
+
+proc unsubscribe*(ctx: Context, topic: openArray[byte]) =
+  let t = @topic
+  var idx = -1
+  for i, s in ctx.sub0Topics:
+    if s == t:
+      idx = i
+      break
+  if idx >= 0:
+    ctx.sub0Topics.delete(idx)
+    var kept: seq[SpMsg] = @[]
+    for m in ctx.recvQueue:
+      if matchesTopicList(ctx.sub0Topics, m.body):
+        kept.add(m)
+    ctx.recvQueue = kept
+  else:
+    raise newNngError(NNG_ENOENT, "Subscription not found")
 
 proc sendMsg*(ctx: Context, msg: SpMsg) =
   if ctx.closed or ctx.socket.closed:
     raise newNngError(NNG_ECLOSED, "Context or socket is closed")
-  let ev = EngineEvent(kind: evUserSend, ctxId: ctx.ctxId, msg: msg)
+  if ctx.socket.engineKind == engReq0:
+    ctx.recvQueue.setLen(0)
+    ctx.socket.updateRecvFd()
+  let ev =
+    EngineEvent(kind: evUserSend, ctxId: ctx.ctxId, msg: msg, nowMs: currentNowMs())
   let actions = ctx.socket.stepEngine(ev)
   ctx.socket.executeActions(actions)
+  if ctx.lastErr != 0:
+    let err = ctx.lastErr
+    ctx.lastErr = 0
+    raise newNngError(err, "Context send failed: " & $err)
+  if ctx.socket.lastErr != 0:
+    let err = ctx.socket.lastErr
+    ctx.socket.lastErr = 0
+    raise newNngError(err, "Socket send failed: " & $err)
 
 proc send*(ctx: Context, data: openArray[byte]) =
   ctx.sendMsg(initSpMsg(data))
@@ -397,6 +745,9 @@ proc send*(ctx: Context, str: string) =
 proc recvMsg*(ctx: Context, timeoutMs: int = -1): SpMsg =
   if ctx.closed or ctx.socket.closed:
     raise newNngError(NNG_ECLOSED, "Context or socket is closed")
+  if ctx.socket.engineKind == engSurveyor0 and not ctx.socket.raw:
+    if ctx.recvQueue.len == 0 and not ctx.socket.inSurvey(ctx.ctxId):
+      raise newNngError(NNG_ESTATE, "Incorrect state: no survey in progress")
   let tmo =
     if timeoutMs >= 0:
       timeoutMs
@@ -405,14 +756,29 @@ proc recvMsg*(ctx: Context, timeoutMs: int = -1): SpMsg =
   when not defined(js):
     let start = getMonoTime()
     while ctx.recvQueue.len == 0 and not ctx.closed and not ctx.socket.closed:
-      asyncdispatch.poll(10)
+      if ctx.lastErr != 0:
+        let err = ctx.lastErr
+        ctx.lastErr = 0
+        raise newNngError(err, "Context error: " & $err)
+      try:
+        asyncdispatch.poll(1)
+      except CatchableError:
+        os.sleep(1)
       if tmo >= 0:
         let elapsed = (getMonoTime() - start).inMilliseconds
         if elapsed > tmo:
           raise newNngError(NNG_ETIMEDOUT, "Context recvMsg timed out")
+    if ctx.lastErr != 0:
+      let err = ctx.lastErr
+      ctx.lastErr = 0
+      raise newNngError(err, "Context error: " & $err)
   if ctx.recvQueue.len > 0:
     result = ctx.recvQueue[0]
     ctx.recvQueue.delete(0)
+    if result.pipeId != 0 and result.pipeId in ctx.socket.pipes:
+      ctx.socket.pipes[result.pipeId].drain()
+    ctx.socket.updateRecvFd()
+    ctx.socket.updateSendFd()
   else:
     raise newNngError(NNG_ECLOSED, "Context closed or empty")
 
@@ -516,15 +882,9 @@ proc start*(d: Dialer) =
   let parsed = parseSpUrl(d.url)
   case parsed.kind
   of tranInproc:
-    let ep = connectInproc(
-      parsed.raw,
-      d.socket.proto,
-      proc(rawFrame: seq[byte]) =
-        discard,
-      proc() =
-        discard,
-    )
-    d.socket.attachEndpoint(ep)
+    let ep = connectInproc(parsed.raw, d.socket.proto, nil, nil)
+    if not ep.closed:
+      d.socket.attachEndpoint(ep, dialerPtr = cast[pointer](d))
   of tranTcp:
     when not defined(js):
       let host = if parsed.host.len > 0: parsed.host else: "127.0.0.1"
@@ -663,7 +1023,7 @@ proc start*(l: Listener) =
       parsed.raw,
       l.socket.proto,
       proc(ep: InprocEndpoint) =
-        l.socket.attachEndpoint(ep),
+        l.socket.attachEndpoint(ep, listenerPtr = cast[pointer](l)),
     )
     l.closeImpl = proc() =
       inprocListener.close()
@@ -792,14 +1152,49 @@ proc listen*(s: Socket, urlStr: string): Listener =
 proc sendMsg*(s: Socket, msg: SpMsg, ctxId: uint32 = 0) =
   if s.closed:
     raise newNngError(NNG_ECLOSED, "Socket is closed")
-  let cid =
-    if ctxId != 0:
-      ctxId
+  if s.engineKind == engReq0:
+    if ctxId != 0 and ctxId in s.contexts:
+      s.contexts[ctxId].recvQueue.setLen(0)
     else:
-      allocCtxId()
-  let ev = EngineEvent(kind: evUserSend, ctxId: cid, msg: msg)
+      s.recvQueue.setLen(0)
+    s.updateRecvFd()
+  elif s.engineKind == engSurveyor0:
+    if ctxId != 0 and ctxId in s.contexts:
+      let ctx = s.contexts[ctxId]
+      ctx.recvQueue.setLen(0)
+      if ctx.pendingRecvCb != nil:
+        let cb = ctx.pendingRecvCb
+        ctx.pendingRecvCb = nil
+        cb(NNG_ECANCELED, SpMsg())
+    else:
+      s.recvQueue.setLen(0)
+      if s.pendingRecvCb != nil:
+        let cb = s.pendingRecvCb
+        s.pendingRecvCb = nil
+        cb(NNG_ECANCELED, SpMsg())
+    s.updateRecvFd()
+  if s.pipes.len == 0 and s.options.getInt(NNG_OPT_SENDBUF) > 0:
+    let maxSend = s.options.getInt(NNG_OPT_SENDBUF)
+    if s.sendQueue.len < maxSend:
+      s.sendQueue.add(msg)
+      s.updateSendFd()
+      return
+    else:
+      raise newNngError(NNG_ETIMEDOUT, "Send buffer full")
+  let cid = ctxId
+  let ev = EngineEvent(kind: evUserSend, ctxId: cid, msg: msg, nowMs: currentNowMs())
   let actions = s.stepEngine(ev)
-  s.executeActions(actions)
+  try:
+    s.executeActions(actions)
+  except NngError as e:
+    if s.engineKind == engPair1 and s.pair1Eng.polyamorous:
+      return
+    raise e
+  s.updateSendFd()
+  if s.lastErr != 0:
+    let err = s.lastErr
+    s.lastErr = 0
+    raise newNngError(err, "Socket send failed: " & $err)
 
 proc send*(s: Socket, data: openArray[byte], ctxId: uint32 = 0) =
   s.sendMsg(initSpMsg(data), ctxId)
@@ -813,6 +1208,12 @@ proc send*(s: Socket, str: string) =
 proc recvMsg*(s: Socket, timeoutMs: int = -1): SpMsg =
   if s.closed:
     raise newNngError(NNG_ECLOSED, "Socket is closed")
+  if s.engineKind == engSurveyor0 and not s.raw:
+    if s.recvQueue.len == 0 and not s.inSurvey(0):
+      raise newNngError(NNG_ESTATE, "Incorrect state: no survey in progress")
+  if s.engineKind == engReq0 and not s.raw:
+    if s.recvQueue.len == 0 and 0 notin s.req0Eng.ctxToReqId:
+      raise newNngError(NNG_ESTATE, "Incorrect state: no request in flight")
   let tmo =
     if timeoutMs >= 0:
       timeoutMs
@@ -821,15 +1222,30 @@ proc recvMsg*(s: Socket, timeoutMs: int = -1): SpMsg =
   when not defined(js):
     let start = getMonoTime()
     while s.recvQueue.len == 0 and not s.closed:
-      asyncdispatch.poll(10)
+      if s.lastErr != 0:
+        let err = s.lastErr
+        s.lastErr = 0
+        raise newNngError(err, "Socket error: " & $err)
+      try:
+        asyncdispatch.poll(1)
+      except CatchableError:
+        os.sleep(1)
       if tmo >= 0:
         let elapsed = (getMonoTime() - start).inMilliseconds
         if elapsed > tmo:
           raise
             newNngError(NNG_ETIMEDOUT, "Socket recvMsg timed out after " & $tmo & "ms")
+    if s.lastErr != 0:
+      let err = s.lastErr
+      s.lastErr = 0
+      raise newNngError(err, "Socket error: " & $err)
   if s.recvQueue.len > 0:
     result = s.recvQueue[0]
     s.recvQueue.delete(0)
+    if result.pipeId != 0 and result.pipeId in s.pipes:
+      s.pipes[result.pipeId].drain()
+    s.updateRecvFd()
+    s.updateSendFd()
   else:
     raise newNngError(NNG_ECLOSED, "No message ready or socket closed")
 
@@ -867,6 +1283,12 @@ proc subscribe*(s: Socket, topic: string) =
 proc unsubscribe*(s: Socket, topic: openArray[byte]) =
   if s.engineKind == engSub0:
     s.sub0Eng.unsubscribe(topic)
+    var kept: seq[SpMsg] = @[]
+    for m in s.recvQueue:
+      if s.sub0Eng.matchesTopic(m.body):
+        kept.add(m)
+    s.recvQueue = kept
+    s.updateRecvFd()
   else:
     raise newNngError(NNG_ENOTSUP, "unsubscribe() is only supported on SUB0 sockets")
 
@@ -879,6 +1301,14 @@ proc unsubscribe*(s: Socket, topic: string) =
 proc close*(s: Socket) =
   if not s.closed:
     s.closed = true
+    if s.pendingRecvCb != nil:
+      let cb = s.pendingRecvCb
+      s.pendingRecvCb = nil
+      cb(NNG_ECLOSED, SpMsg())
+    s.deviceHook = nil
+    when not defined(js):
+      for fd in [s.recvFds[0], s.recvFds[1], s.sendFds[0], s.sendFds[1]]:
+        discard posix.close(fd)
     for ctx in s.contexts.values:
       ctx.close()
     s.contexts.clear()
@@ -891,18 +1321,19 @@ proc close*(s: Socket) =
 
 # Raw Mode Device Forwarding
 proc device*(s1, s2: Socket): Future[void] {.async.} =
-  if not s1.raw or not s2.raw:
+  let target2 = if s2 != nil and s2 != s1: s2 else: s1
+  if not s1.raw or (s2 != nil and not s2.raw):
     raise newNngError(NNG_EINVAL, "device requires raw mode sockets")
 
-  while not s1.closed and not s2.closed:
-    # Forward s1 -> s2 if message ready
+  while not s1.closed and (target2 == s1 or not target2.closed):
+    # Forward s1 -> target2 if message ready
     if s1.hasRecv():
       let msg = s1.recvMsg(0)
-      s2.send(msg.body)
-    # Forward s2 -> s1 if message ready
-    if s2.hasRecv():
-      let msg = s2.recvMsg(0)
-      s1.send(msg.body)
+      target2.sendMsg(msg)
+    # Forward target2 -> s1 if message ready
+    if target2 != s1 and target2.hasRecv():
+      let msg = target2.recvMsg(0)
+      s1.sendMsg(msg)
     await sleepAsync(1)
 
 # Convenience Constructors
@@ -912,6 +1343,7 @@ proc openPair0*(raw: bool = false): Socket =
 proc openPair1*(polyamorous: bool = false, raw: bool = false): Socket =
   result = newSocket(spPair1, raw)
   result.pair1Eng.polyamorous = polyamorous
+  result.options.setBool(NNG_OPT_PAIR1_POLY, polyamorous)
 
 proc openPub0*(raw: bool = false): Socket =
   newSocket(spPub0, raw)

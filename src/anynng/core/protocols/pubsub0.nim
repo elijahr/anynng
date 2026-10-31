@@ -2,6 +2,7 @@
 # Licensed under MIT License.
 
 import ../types
+import ../options
 
 type Pub0Engine* = object
   pipes*: seq[PipeId]
@@ -41,11 +42,13 @@ type Sub0Engine* = object
   pipes*: seq[PipeId]
   subscriptions*: seq[seq[byte]]
   raw*: bool
+  hasContexts*: bool
 
 func initSub0Engine*(raw: bool = false): Sub0Engine =
   result.pipes = @[]
   result.subscriptions = @[]
   result.raw = raw
+  result.hasContexts = false
 
 proc subscribe*(eng: var Sub0Engine, topic: openArray[byte]) =
   let t = @topic
@@ -61,6 +64,8 @@ proc unsubscribe*(eng: var Sub0Engine, topic: openArray[byte]) =
       break
   if idx >= 0:
     eng.subscriptions.delete(idx)
+  else:
+    raise newNngError(NNG_ENOENT, "Subscription not found")
 
 proc matchesTopic*(eng: Sub0Engine, frame: openArray[byte]): bool =
   # WARN-02: Default is drop-all until at least one topic is registered.
@@ -98,7 +103,7 @@ proc step*(eng: var Sub0Engine, ev: EngineEvent): seq[EngineAction] =
     # SUB0 sockets cannot transmit to PUB0
     result.add(EngineAction(kind: actFailContext, ctxId: ev.ctxId, err: spErrProto))
   of evPipeMessage:
-    if eng.matchesTopic(ev.rawFrame):
+    if eng.matchesTopic(ev.rawFrame) or eng.hasContexts:
       let msg = initSpMsg(ev.rawFrame)
       result.add(
         EngineAction(kind: actDeliverRecv, ctxId: 0, msg: msg, pipeId: ev.pipeId)
