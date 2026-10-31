@@ -1,8 +1,0 @@
-id = "multi-target-transport-backends-nim-js-browser-node-websocket-nimts-wasm-bridge-and-native-nim-c-tcp-ipc-udp-ws-inproc-with-live-c-libnng-interop"
-title = "Multi-Target Transport Backends (nim js Browser/Node WebSocket, nimts WASM Bridge, and native nim c TCP/IPC/UDP/WS/Inproc) with Live C libnng Interop"
-season = "v0.1.0"
-sunlight = "high"
-tags = ["transports", "js", "wasm", "nimts", "native", "interop"]
-status = "SOWN"
-created_at = "2026-10-30T08:17:45Z"
-updated_at = "2026-10-30T08:17:45Z"

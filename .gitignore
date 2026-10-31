@@ -39,3 +39,18 @@ dist/
 
 
 .nuts_ports
+
+# Ignore all dotfiles and dotdirectories by default
+.*
+!.gitignore
+!.github/
+
+# Swarm, ceremony, and local development files
+garden.toml
+garden-swarm.json
+garden-prompts.md
+implementation_plan.md
+understanding.md
+audit_report.md
+adversarial_code_review_plan.md
+
