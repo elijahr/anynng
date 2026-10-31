@@ -939,3 +939,5 @@ proc openRespondent0*(raw: bool = false): Socket =
 
 proc openBus0*(raw: bool = false): Socket =
   newSocket(spBus0, raw)
+
+const cApiModule* = "src/anynng/c_api.nim"
