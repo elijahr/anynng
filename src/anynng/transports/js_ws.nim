@@ -16,11 +16,6 @@ when defined(js):
     JsMessageEvent* = ref object of JsObject
     JsUint8Array* = ref object of JsObject
 
-    PipeEvent* = enum
-      pipeEvAddPre = 1
-      pipeEvAddPost = 2
-      pipeEvRemPost = 3
-
     CtxId* = uint32
 
     PipeNotifyHook* = proc(pipeId: PipeId, ev: PipeEvent): bool {.closure.}
