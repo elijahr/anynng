@@ -3,7 +3,7 @@
 # Licensed under MIT License.
 
 when not defined(js):
-  import std/[tables, sets, monotimes, os, random, asyncdispatch, posix, deques]
+  import std/[tables, sets, monotimes, os, random, asyncdispatch, posix, deques, strutils]
   import ../anynng
   import ./core/[types, options, tls]
   import ./core/protocols/pubsub0
@@ -40,6 +40,9 @@ when not defined(js):
       sockId*: uint32
       ctxId*: uint32
       startTime*: int64
+      skipCbPtr*: ptr bool
+      wakeTime*: int64
+      devS1*, devS2*: uint32
 
     NngPipeNotifyCbCdecl* = proc(pipe: NngPipeObj, ev: cint, arg: pointer) {.cdecl.}
 
@@ -58,6 +61,23 @@ when not defined(js):
       fn: proc(arg: pointer) {.cdecl.}
       arg: pointer
       thr: Thread[pointer]
+
+    NngUrlObj* = object
+      u_scheme*: cstring
+      u_userinfo*: cstring
+      u_hostname*: cstring
+      u_port*: uint32
+      u_path*: cstring
+      u_query*: cstring
+      u_fragment*: cstring
+      u_buffer*: pointer
+      u_bufsz*: csize_t
+      u_static*: array[128, char]
+
+    NngUdpObj* = object
+      fd*: cint
+
+    NngLogger* = proc(level: cint, facility: cint, msgid: cstring, msg: cstring) {.cdecl.}
 
   var gHandleMtx: ptr Pthread_mutex = nil
 
@@ -96,6 +116,32 @@ when not defined(js):
 
     gPipeCallbacks = initTable[uint32, seq[PipeNotifyWrapper]]()
     gPendingSendAios: seq[ptr NngAioObj] = @[]
+    gDeviceSockets = initHashSet[uint32]()
+    gClosedSockets = initHashSet[uint32]()
+    gPendingSleepAios: seq[ptr NngAioObj] = @[]
+
+  proc cleanupAio*(aio: ptr NngAioObj) =
+    if aio != nil:
+      if aio.devS1 != 0:
+        gDeviceSockets.excl(aio.devS1)
+        aio.devS1 = 0
+      if aio.devS2 != 0:
+        gDeviceSockets.excl(aio.devS2)
+        aio.devS2 = 0
+      let sIdx = gPendingSleepAios.find(aio)
+      if sIdx >= 0:
+        gPendingSleepAios.delete(sIdx)
+      if aio.sockId in gSockets:
+        let s = gSockets[aio.sockId]
+        if aio.ctxId != 0 and aio.ctxId in gContexts:
+          let c = gContexts[aio.ctxId]
+          c.pendingRecvCb = nil
+        elif aio.ctxId == 0:
+          s.pendingRecvCb = nil
+
+  proc nng_aio_skip_callback*(aio: ptr NngAioObj, skippedp: ptr bool) {.exportc, dynlib, cdecl.} =
+    if skippedp != nil:
+      skippedp[] = false
 
   proc nng_aio_finish*(aio: ptr NngAioObj, err: cint) {.exportc, dynlib, cdecl.}
   proc nng_sendmsg*(
@@ -124,8 +170,23 @@ when not defined(js):
 
   proc servicePendingSends*() =
     tickSockets()
-    var i = 0
     let now = getMonoTime().ticks div 1_000_000
+
+    var readySleepAios: seq[ptr NngAioObj] = @[]
+    var sIdx = 0
+    while sIdx < gPendingSleepAios.len:
+      let sa = gPendingSleepAios[sIdx]
+      if sa.finished or sa.stopped:
+        gPendingSleepAios.delete(sIdx)
+      elif now >= sa.wakeTime:
+        gPendingSleepAios.delete(sIdx)
+        readySleepAios.add(sa)
+      else:
+        inc sIdx
+    for sa in readySleepAios:
+      nng_aio_finish(sa, 0)
+
+    var i = 0
     while i < gPendingSendAios.len:
       let a = gPendingSendAios[i]
       if a.finished or a.stopped:
@@ -206,7 +267,28 @@ when not defined(js):
   # ----------------------------------------------------------------------
 
   proc nng_version*(): cstring {.exportc, dynlib, cdecl.} =
-    return "1.12.4-anynng"
+    return "2.1.0-anynng"
+
+  proc nng_init*(params: pointer): cint {.exportc, dynlib, cdecl.} =
+    return 0
+
+  proc nng_alloc*(sz: csize_t): pointer {.exportc, dynlib, cdecl.} =
+    if sz == 0:
+      return nil
+    allocShared0(int(sz))
+
+  proc nng_free*(p: pointer, sz: csize_t) {.exportc, dynlib, cdecl.} =
+    if p != nil:
+      deallocShared(p)
+
+  proc nng_strdup*(src: cstring): cstring {.exportc, dynlib, cdecl.} =
+    if src == nil:
+      return nil
+    let len = src.len
+    let p = allocShared0(len + 1)
+    if len > 0:
+      copyMem(p, cast[pointer](src), len)
+    return cast[cstring](p)
 
   proc nng_fini*() {.exportc, dynlib, cdecl.} =
     # Teardown all open sockets
@@ -269,16 +351,108 @@ when not defined(js):
     return uint64(getMonoTime().ticks div 1_000_000)
 
   proc nng_msleep*(ms: uint32) {.exportc, dynlib, cdecl.} =
-    sleep(int(ms))
+    let start = getMonoTime().ticks div 1_000_000
+    let target = int64(ms)
+    while true:
+      servicePendingSends()
+      let now = getMonoTime().ticks div 1_000_000
+      if (now - start) >= target:
+        break
+      let rem = int(target - (now - start))
+      let pollMs = if rem > 10: 10 elif rem > 0: rem else: 1
+      try:
+        poll(pollMs)
+      except CatchableError:
+        sleep(min(rem, 5))
 
   proc nng_random*(): uint32 {.exportc, dynlib, cdecl.} =
     return uint32(rand(high(int32)))
 
-  proc nng_log_set_logger*(fn: pointer) {.exportc, dynlib, cdecl.} =
+  var gCurrentLogger: NngLogger = nil
+  var gLogLevel: cint = 3 # NNG_LOG_ERR
+  var gLogFacility: cint = 1 # NNG_LOG_USER
+
+  proc nng_null_logger*(
+      level: cint, facility: cint, msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl.} =
     discard
 
-  proc nng_log_set_level*(level: cint) {.exportc, dynlib, cdecl.} =
+  proc nng_stderr_logger*(
+      level: cint, facility: cint, msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl.} =
     discard
+
+  proc nng_system_logger*(
+      level: cint, facility: cint, msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl.} =
+    discard
+
+  proc nng_log_set_facility*(facility: cint) {.exportc, dynlib, cdecl.} =
+    gLogFacility = facility
+
+  proc nng_log_set_level*(level: cint) {.exportc, dynlib, cdecl.} =
+    gLogLevel = level
+
+  proc nng_log_get_level*(): cint {.exportc, dynlib, cdecl.} =
+    gLogLevel
+
+  proc nng_log_set_logger*(logger: NngLogger) {.exportc, dynlib, cdecl.} =
+    gCurrentLogger = logger
+
+  proc nng_log_err*(
+      msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl, varargs.} =
+    discard
+
+  proc nng_log_warn*(
+      msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl, varargs.} =
+    discard
+
+  proc nng_log_notice*(
+      msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl, varargs.} =
+    discard
+
+  proc nng_log_info*(
+      msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl, varargs.} =
+    discard
+
+  proc nng_log_debug*(
+      msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl, varargs.} =
+    discard
+
+  proc nng_log_auth*(
+      level: cint, msgid: cstring, msg: cstring
+  ) {.exportc, dynlib, cdecl, varargs.} =
+    discard
+
+  proc nng_udp_open*(udpp: ptr pointer, sa: pointer): cint {.exportc, dynlib, cdecl.} =
+    if udpp == nil:
+      return cint(NNG_EINVAL)
+    let p = allocShared0(sizeof(NngUdpObj))
+    udpp[] = p
+    return 0
+
+  proc nng_udp_stop*(udp: pointer) {.exportc, dynlib, cdecl.} =
+    discard
+
+  proc nng_udp_close*(udp: pointer) {.exportc, dynlib, cdecl.} =
+    if udp != nil:
+      deallocShared(udp)
+
+  proc nng_udp_sockname*(udp: pointer, sa: pointer): cint {.exportc, dynlib, cdecl.} =
+    return 0
+
+  proc nng_udp_send*(udp: pointer, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+    if aio != nil:
+      nng_aio_finish(aio, 0)
+
+  proc nng_udp_recv*(udp: pointer, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+    if aio != nil:
+      nng_aio_finish(aio, 0)
 
   # ----------------------------------------------------------------------
   # Sockets & Protocol Openers
@@ -292,11 +466,14 @@ when not defined(js):
     result.id = id
 
   proc nng_close*(s: NngSocketObj): cint {.exportc, dynlib, cdecl.} =
-    if s.id notin gSockets:
+    if s.id in gClosedSockets or s.id notin gSockets:
       return cint(NNG_ECLOSED)
+    if s.id in gDeviceSockets:
+      return cint(NNG_EBUSY)
     let sock = gSockets[s.id]
     closePendingSendsForSocket(s.id)
     gSockets.del(s.id)
+    gClosedSockets.incl(s.id)
     gPipeCallbacks.del(s.id)
     var ctxsToDel: seq[uint32] = @[]
     for cid, ctx in gContexts:
@@ -312,7 +489,12 @@ when not defined(js):
     except CatchableError as e:
       return toCError(e)
 
+  proc nng_socket_close*(s: NngSocketObj): cint {.exportc, dynlib, cdecl.} =
+    nng_close(s)
+
   proc nng_socket_id*(s: NngSocketObj): cint {.exportc, dynlib, cdecl.} =
+    if s.id == 0 or s.id notin gSockets or s.id in gClosedSockets:
+      return -1
     return cint(s.id)
 
   proc nng_pair0_open*(s: ptr NngSocketObj): cint {.exportc, dynlib, cdecl.} =
@@ -584,8 +766,267 @@ when not defined(js):
       return toCError(e)
 
   # ----------------------------------------------------------------------
-  # Message Objects (nng_msg)
+  # URL API (nng_url)
   # ----------------------------------------------------------------------
+
+  proc newNngUrl(
+      scheme, userinfo, hostname: string,
+      port: uint32,
+      path, query, frag: string
+  ): ptr NngUrlObj =
+    let totalLen =
+      scheme.len + 1 + userinfo.len + 1 + hostname.len + 1 +
+      path.len + 1 + query.len + 1 + frag.len + 1
+    let buf = allocShared0(totalLen)
+    let url = cast[ptr NngUrlObj](allocShared0(sizeof(NngUrlObj)))
+    url.u_buffer = buf
+    url.u_bufsz = csize_t(totalLen)
+    var offset = 0
+
+    template copyStr(s: string): cstring =
+      let p = cast[cstring](cast[uint](buf) + uint(offset))
+      if s.len > 0:
+        copyMem(p, cstring(s), s.len)
+      offset += s.len + 1
+      p
+
+    url.u_scheme = copyStr(scheme)
+    if userinfo.len > 0:
+      url.u_userinfo = copyStr(userinfo)
+    else:
+      url.u_userinfo = nil
+
+    url.u_hostname = copyStr(hostname)
+    url.u_port = port
+    url.u_path = copyStr(path)
+    if query.len > 0:
+      url.u_query = copyStr(query)
+    else:
+      url.u_query = nil
+    if frag.len > 0:
+      url.u_fragment = copyStr(frag)
+    else:
+      url.u_fragment = nil
+
+    return url
+
+  proc nng_url_free*(url: ptr NngUrlObj) {.exportc, dynlib, cdecl.} =
+    if url != nil:
+      if url.u_buffer != nil:
+        deallocShared(url.u_buffer)
+      deallocShared(url)
+
+  proc nng_url_scheme*(url: ptr NngUrlObj): cstring {.exportc, dynlib, cdecl.} =
+    if url != nil: url.u_scheme else: nil
+
+  proc nng_url_port*(url: ptr NngUrlObj): uint32 {.exportc, dynlib, cdecl.} =
+    if url != nil: url.u_port else: 0
+
+  proc nng_url_resolve_port*(
+      url: ptr NngUrlObj, port: uint32
+  ) {.exportc, dynlib, cdecl.} =
+    if url != nil and url.u_port == 0:
+      url.u_port = port
+
+  proc nng_url_hostname*(url: ptr NngUrlObj): cstring {.exportc, dynlib, cdecl.} =
+    if url != nil: url.u_hostname else: nil
+
+  proc nng_url_userinfo*(url: ptr NngUrlObj): cstring {.exportc, dynlib, cdecl.} =
+    if url != nil: url.u_userinfo else: nil
+
+  proc nng_url_path*(url: ptr NngUrlObj): cstring {.exportc, dynlib, cdecl.} =
+    if url != nil: url.u_path else: nil
+
+  proc nng_url_query*(url: ptr NngUrlObj): cstring {.exportc, dynlib, cdecl.} =
+    if url != nil: url.u_query else: nil
+
+  proc nng_url_fragment*(url: ptr NngUrlObj): cstring {.exportc, dynlib, cdecl.} =
+    if url != nil: url.u_fragment else: nil
+
+  proc nng_url_parse*(
+      urlp: ptr ptr NngUrlObj, raw: cstring
+  ): cint {.exportc, dynlib, cdecl.} =
+    if urlp == nil or raw == nil:
+      return cint(NNG_EINVAL)
+    let rawStr = $raw
+    let colonIdx = rawStr.find("://")
+    if colonIdx < 0:
+      return cint(NNG_EINVAL)
+    let scheme = rawStr[0 ..< colonIdx]
+    var rest = rawStr[colonIdx + 3 .. ^1]
+
+    var userinfo = ""
+    var hostname = ""
+    var port: uint32 = 0
+    var path = ""
+    var query = ""
+    var frag = ""
+
+    let hashIdx = rest.find('#')
+    if hashIdx >= 0:
+      frag = rest[hashIdx + 1 .. ^1]
+      rest = rest[0 ..< hashIdx]
+
+    let qIdx = rest.find('?')
+    if qIdx >= 0:
+      query = rest[qIdx + 1 .. ^1]
+      rest = rest[0 ..< qIdx]
+
+    let slashIdx = rest.find('/')
+    var hostpart = rest
+    if slashIdx >= 0:
+      hostpart = rest[0 ..< slashIdx]
+      path = rest[slashIdx .. ^1]
+
+    let atIdx = hostpart.find('@')
+    if atIdx >= 0:
+      userinfo = hostpart[0 ..< atIdx]
+      hostpart = hostpart[atIdx + 1 .. ^1]
+
+    if hostpart.startsWith("["):
+      let closeBracket = hostpart.find(']')
+      if closeBracket < 0:
+        return cint(NNG_EINVAL)
+      hostname = hostpart[1 ..< closeBracket]
+      let afterBracket = hostpart[closeBracket + 1 .. ^1]
+      if afterBracket.startsWith(":"):
+        try:
+          port = uint32(parseInt(afterBracket[1 .. ^1]))
+        except CatchableError:
+          return cint(NNG_EINVAL)
+    else:
+      let colonPort = hostpart.rfind(':')
+      if colonPort >= 0:
+        hostname = hostpart[0 ..< colonPort]
+        try:
+          port = uint32(parseInt(hostpart[colonPort + 1 .. ^1]))
+        except CatchableError:
+          return cint(NNG_EINVAL)
+      else:
+        hostname = hostpart
+
+    urlp[] = newNngUrl(scheme, userinfo, hostname, port, path, query, frag)
+    return 0
+
+  proc nng_url_clone*(
+      dstp: ptr ptr NngUrlObj, src: ptr NngUrlObj
+  ): cint {.exportc, dynlib, cdecl.} =
+    if dstp == nil or src == nil:
+      return cint(NNG_EINVAL)
+    let scheme = if src.u_scheme != nil: $src.u_scheme else: ""
+    let userinfo = if src.u_userinfo != nil: $src.u_userinfo else: ""
+    let hostname = if src.u_hostname != nil: $src.u_hostname else: ""
+    let path = if src.u_path != nil: $src.u_path else: ""
+    let query = if src.u_query != nil: $src.u_query else: ""
+    let frag = if src.u_fragment != nil: $src.u_fragment else: ""
+    dstp[] = newNngUrl(scheme, userinfo, hostname, src.u_port, path, query, frag)
+    return 0
+
+  proc urlToString(url: ptr NngUrlObj): string =
+    if url == nil: return ""
+    let scheme = if url.u_scheme != nil: $url.u_scheme else: ""
+    result = scheme & "://"
+    if url.u_userinfo != nil and url.u_userinfo[0] != '\0':
+      result &= $url.u_userinfo & "@"
+    let host = if url.u_hostname != nil: $url.u_hostname else: ""
+    if host.contains(':') and not host.startsWith("["):
+      result &= "[" & host & "]"
+    else:
+      result &= host
+    if url.u_port != 0:
+      result &= ":" & $url.u_port
+    elif scheme.startsWith("tcp") or scheme.startsWith("tls") or scheme.startsWith("ws"):
+      if host.len > 0 and (result.rfind(':') <= result.find("://") + 2):
+        result &= ":0"
+    if url.u_path != nil and url.u_path[0] != '\0':
+      let p = $url.u_path
+      if not result.endsWith("/") and not p.startsWith("/"):
+        result &= "/"
+      result &= p
+    if url.u_query != nil and url.u_query[0] != '\0':
+      result &= "?" & $url.u_query
+    if url.u_fragment != nil and url.u_fragment[0] != '\0':
+      result &= "#" & $url.u_fragment
+
+  proc nng_url_sprintf*(
+      buf: cstring, sz: csize_t, url: ptr NngUrlObj
+  ): cint {.exportc, dynlib, cdecl.} =
+    if buf == nil or sz == 0 or url == nil:
+      return cint(NNG_EINVAL)
+    let s = urlToString(url)
+    let copyLen = min(s.len, int(sz) - 1)
+    if copyLen > 0:
+      copyMem(buf, cstring(s), copyLen)
+    cast[ptr UncheckedArray[char]](buf)[copyLen] = '\0'
+    return cint(s.len)
+
+  proc nng_listen_url*(
+      s: NngSocketObj, url: ptr NngUrlObj, lp: ptr NngListenerObj, flags: cint
+  ): cint {.exportc, dynlib, cdecl.} =
+    if url == nil:
+      return cint(NNG_EINVAL)
+    let addrStr = urlToString(url)
+    return nng_listen(s, addrStr.cstring, lp, flags)
+
+  proc nng_dial_url*(
+      s: NngSocketObj, url: ptr NngUrlObj, dp: ptr NngDialerObj, flags: cint
+  ): cint {.exportc, dynlib, cdecl.} =
+    if url == nil:
+      return cint(NNG_EINVAL)
+    let addrStr = urlToString(url)
+    return nng_dial(s, addrStr.cstring, dp, flags)
+
+  proc nng_dialer_create_url*(
+      dp: ptr NngDialerObj, s: NngSocketObj, url: ptr NngUrlObj
+  ): cint {.exportc, dynlib, cdecl.} =
+    if url == nil:
+      return cint(NNG_EINVAL)
+    let addrStr = urlToString(url)
+    return nng_dialer_create(dp, s, addrStr.cstring)
+
+  proc nng_listener_create_url*(
+      lp: ptr NngListenerObj, s: NngSocketObj, url: ptr NngUrlObj
+  ): cint {.exportc, dynlib, cdecl.} =
+    if url == nil:
+      return cint(NNG_EINVAL)
+    let addrStr = urlToString(url)
+    return nng_listener_create(lp, s, addrStr.cstring)
+
+  proc nng_listener_get_url*(
+      l: NngListenerObj, urlp: ptr ptr NngUrlObj
+  ): cint {.exportc, dynlib, cdecl.} =
+    if l.id notin gListeners or urlp == nil:
+      return cint(NNG_EINVAL)
+    let lis = gListeners[l.id]
+    var addrStr = lis.url
+    if lis.boundPort > 0:
+      let colonIdx = addrStr.rfind(':')
+      let schemeEnd = addrStr.find("://")
+      if colonIdx > schemeEnd + 2:
+        addrStr = addrStr[0 .. colonIdx] & $lis.boundPort
+      else:
+        addrStr &= ":" & $lis.boundPort
+    var parsed: ptr NngUrlObj = nil
+    let rv = nng_url_parse(addr parsed, addrStr.cstring)
+    if rv != 0:
+      return rv
+    if lis.boundPort > 0 and parsed != nil:
+      parsed.u_port = uint32(lis.boundPort)
+    urlp[] = parsed
+    return 0
+
+  proc nng_dialer_get_url*(
+      d: NngDialerObj, urlp: ptr ptr NngUrlObj
+  ): cint {.exportc, dynlib, cdecl.} =
+    if d.id notin gDialers or urlp == nil:
+      return cint(NNG_EINVAL)
+    let dialer = gDialers[d.id]
+    var parsed: ptr NngUrlObj = nil
+    let rv = nng_url_parse(addr parsed, dialer.url.cstring)
+    if rv != 0:
+      return rv
+    urlp[] = parsed
+    return 0
 
   proc nng_msg_alloc*(
       msgp: ptr ptr NngMsgObj, sz: csize_t
@@ -1171,16 +1612,18 @@ when not defined(js):
   proc nng_sub0_socket_subscribe*(
       s: NngSocketObj, buf: pointer, sz: csize_t
   ): cint {.exportc, dynlib, cdecl.} =
-    if s.id notin gSockets:
-      return cint(NNG_EINVAL)
+    if s.id in gClosedSockets or s.id notin gSockets:
+      return cint(NNG_ECLOSED)
     let sock = gSockets[s.id]
-    if sock.engineKind != engSub0:
+    if sock.closed:
+      return cint(NNG_ECLOSED)
+    if sock.engineKind != engSub0 or sock.raw:
       return cint(NNG_ENOTSUP)
     var b = newSeq[byte](sz)
     if sz > 0 and buf != nil:
       copyMem(addr b[0], buf, int(sz))
     try:
-      sock.sub0Eng.subscribe(b)
+      sock.subscribe(b)
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -1188,16 +1631,18 @@ when not defined(js):
   proc nng_sub0_socket_unsubscribe*(
       s: NngSocketObj, buf: pointer, sz: csize_t
   ): cint {.exportc, dynlib, cdecl.} =
-    if s.id notin gSockets:
-      return cint(NNG_EINVAL)
+    if s.id in gClosedSockets or s.id notin gSockets:
+      return cint(NNG_ECLOSED)
     let sock = gSockets[s.id]
-    if sock.engineKind != engSub0:
+    if sock.closed:
+      return cint(NNG_ECLOSED)
+    if sock.engineKind != engSub0 or sock.raw:
       return cint(NNG_ENOTSUP)
     var b = newSeq[byte](sz)
     if sz > 0 and buf != nil:
       copyMem(addr b[0], buf, int(sz))
     try:
-      sock.sub0Eng.unsubscribe(b)
+      sock.unsubscribe(b)
       return 0
     except CatchableError as e:
       return toCError(e)
@@ -1205,9 +1650,11 @@ when not defined(js):
   proc nng_sub0_ctx_subscribe*(
       c: NngCtxObj, buf: pointer, sz: csize_t
   ): cint {.exportc, dynlib, cdecl.} =
-    if c.id notin gContexts:
-      return cint(NNG_EINVAL)
+    if c.id in gClosedCtxs or c.id notin gContexts:
+      return cint(NNG_ECLOSED)
     let ctx = gContexts[c.id]
+    if ctx.closed or ctx.socket.closed or ctx.socket.id in gClosedSockets:
+      return cint(NNG_ECLOSED)
     if ctx.socket.engineKind != engSub0:
       return cint(NNG_ENOTSUP)
     var b = newSeq[byte](sz)
@@ -1222,9 +1669,11 @@ when not defined(js):
   proc nng_sub0_ctx_unsubscribe*(
       c: NngCtxObj, buf: pointer, sz: csize_t
   ): cint {.exportc, dynlib, cdecl.} =
-    if c.id notin gContexts:
-      return cint(NNG_EINVAL)
+    if c.id in gClosedCtxs or c.id notin gContexts:
+      return cint(NNG_ECLOSED)
     let ctx = gContexts[c.id]
+    if ctx.closed or ctx.socket.closed or ctx.socket.id in gClosedSockets:
+      return cint(NNG_ECLOSED)
     if ctx.socket.engineKind != engSub0:
       return cint(NNG_ENOTSUP)
     var b = newSeq[byte](sz)
@@ -1257,6 +1706,7 @@ when not defined(js):
 
   proc nng_aio_free*(aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil:
+      cleanupAio(aio)
       let idx = gPendingSendAios.find(aio)
       if idx >= 0:
         gPendingSendAios.delete(idx)
@@ -1266,6 +1716,7 @@ when not defined(js):
 
   proc nng_aio_stop*(aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil:
+      cleanupAio(aio)
       let idx = gPendingSendAios.find(aio)
       if idx >= 0:
         gPendingSendAios.delete(idx)
@@ -1347,6 +1798,7 @@ when not defined(js):
 
   proc nng_aio_cancel*(aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil:
+      cleanupAio(aio)
       let idx = gPendingSendAios.find(aio)
       if idx >= 0:
         gPendingSendAios.delete(idx)
@@ -1355,6 +1807,7 @@ when not defined(js):
 
   proc nng_aio_abort*(aio: ptr NngAioObj, err: cint) {.exportc, dynlib, cdecl.} =
     if aio != nil:
+      cleanupAio(aio)
       let idx = gPendingSendAios.find(aio)
       if idx >= 0:
         gPendingSendAios.delete(idx)
@@ -1392,14 +1845,24 @@ when not defined(js):
   proc nng_sleep_aio*(ms: int64, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio == nil:
       return
-    sleep(int(ms))
-    nng_aio_finish(aio, 0)
+    if aio.stopped:
+      nng_aio_finish(aio, cint(NNG_ESTOPPED))
+      return
+    aio.finished = false
+    aio.err = 0
+    let now = getMonoTime().ticks div 1_000_000
+    aio.wakeTime = now + max(0'i64, ms)
+    if aio notin gPendingSleepAios:
+      gPendingSleepAios.add(aio)
 
   proc nng_send_aio*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio == nil:
       return
     if aio.stopped:
-      nng_aio_finish(aio, cint(NNG_ECANCELED))
+      nng_aio_finish(aio, cint(NNG_ESTOPPED))
+      return
+    if s.id in gClosedSockets:
+      nng_aio_finish(aio, cint(NNG_ECLOSED))
       return
     if s.id notin gSockets or aio.msg == nil:
       nng_aio_finish(aio, cint(NNG_EINVAL))
@@ -1439,7 +1902,11 @@ when not defined(js):
 
   proc nng_recv_aio*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil and aio.stopped:
-      nng_aio_finish(aio, cint(NNG_ECANCELED))
+      nng_aio_finish(aio, cint(NNG_ESTOPPED))
+      return
+    if s.id in gClosedSockets:
+      if aio != nil:
+        nng_aio_finish(aio, cint(NNG_ECLOSED))
       return
     if s.id notin gSockets or aio == nil:
       if aio != nil:
@@ -1481,9 +1948,15 @@ when not defined(js):
           nng_aio_set_msg(aio, m)
         nng_aio_finish(aio, cint(res))
 
+  proc nng_socket_send*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+    nng_send_aio(s, aio)
+
+  proc nng_socket_recv*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+    nng_recv_aio(s, aio)
+
   proc nng_ctx_send*(c: NngCtxObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil and aio.stopped:
-      nng_aio_finish(aio, cint(NNG_ECANCELED))
+      nng_aio_finish(aio, cint(NNG_ESTOPPED))
       return
     if c.id in gClosedCtxs:
       if aio != nil:
@@ -1547,7 +2020,7 @@ when not defined(js):
 
   proc nng_ctx_recv*(c: NngCtxObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
     if aio != nil and aio.stopped:
-      nng_aio_finish(aio, cint(NNG_ECANCELED))
+      nng_aio_finish(aio, cint(NNG_ESTOPPED))
       return
     if c.id in gClosedCtxs:
       if aio != nil:
@@ -1617,10 +2090,13 @@ when not defined(js):
     if p.id in gPipes:
       let pipe = gPipes[p.id]
       let s = pipe.socket
-      if s != nil:
+      if s != nil and not s.closed and s.id notin gClosedSockets:
         for id, sock in gSockets:
           if sock == s:
             return NngSocketObj(id: id)
+    for id, s in gSockets:
+      if not s.closed and s.id notin gClosedSockets and PipeId(p.id) in s.pipes:
+        return NngSocketObj(id: id)
     return NngSocketObj(id: 0)
 
   proc nng_pipe_dialer*(p: NngPipeObj): NngDialerObj {.exportc, dynlib, cdecl.} =
@@ -1644,12 +2120,23 @@ when not defined(js):
     return NngListenerObj(id: 0)
 
   proc nng_pipe_close*(p: NngPipeObj): cint {.exportc, dynlib, cdecl.} =
+    var found = false
     if p.id in gPipes:
       let pipe = gPipes[p.id]
       let sock = pipe.socket
       pipe.close()
+      gPipes.del(p.id)
       if sock != nil:
         closePendingSendsForSocket(sock.id)
+      found = true
+    for id, sock in gSockets:
+      if PipeId(p.id) in sock.pipes:
+        let pipe = sock.pipes[PipeId(p.id)]
+        sock.pipes.del(PipeId(p.id))
+        pipe.close()
+        closePendingSendsForSocket(id)
+        found = true
+    if found:
       return 0
     return cint(NNG_ECLOSED)
 
@@ -1664,11 +2151,11 @@ when not defined(js):
     let sock = gSockets[s.id]
     let pipeEv =
       case ev
-      of 0:
-        pipeEvAddPre
       of 1:
-        pipeEvAddPost
+        pipeEvAddPre
       of 2:
+        pipeEvAddPost
+      of 3:
         pipeEvRemPost
       else:
         return cint(NNG_EINVAL)
@@ -1754,7 +2241,7 @@ when not defined(js):
     let sock = gSockets[s.id]
     let optName = $name
     if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
-      if sock.engineKind != engSub0:
+      if sock.engineKind != engSub0 or sock.raw:
         return cint(NNG_ENOTSUP)
       var topic = newSeq[byte](sz)
       if sz > 0 and val != nil:
@@ -1881,6 +2368,19 @@ when not defined(js):
     except CatchableError as e:
       return toCError(e)
 
+  proc nng_socket_get_recv_poll_fd*(
+      s: NngSocketObj, fdp: ptr cint
+  ): cint {.exportc, dynlib, cdecl.} =
+    nng_socket_get_int(s, NNG_OPT_RECVFD.cstring, fdp)
+
+  proc nng_socket_get_send_poll_fd*(
+      s: NngSocketObj, fdp: ptr cint
+  ): cint {.exportc, dynlib, cdecl.} =
+    nng_socket_get_int(s, NNG_OPT_SENDFD.cstring, fdp)
+
+  proc nng_socket_pair*(fds: ptr cint): cint {.exportc, dynlib, cdecl.} =
+    cint(NNG_ENOTSUP)
+
   proc nng_socket_set_int*(
       s: NngSocketObj, name: cstring, val: cint
   ): cint {.exportc, dynlib, cdecl.} =
@@ -1889,7 +2389,7 @@ when not defined(js):
     let sock = gSockets[s.id]
     let optName = $name
     if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
-      if sock.engineKind != engSub0:
+      if sock.engineKind != engSub0 or sock.raw:
         return cint(NNG_ENOTSUP)
       var b = newSeq[byte](sizeof(cint))
       var v = val
@@ -1928,7 +2428,7 @@ when not defined(js):
     let sock = gSockets[s.id]
     let optName = $name
     if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
-      if sock.engineKind != engSub0:
+      if sock.engineKind != engSub0 or sock.raw:
         return cint(NNG_ENOTSUP)
       var b = newSeq[byte](sizeof(bool))
       var v = val
@@ -2212,6 +2712,12 @@ when not defined(js):
 
     aio.finished = false
     aio.err = 0
+    if s1.id != 0:
+      gDeviceSockets.incl(s1.id)
+      aio.devS1 = s1.id
+    if s2.id != 0:
+      gDeviceSockets.incl(s2.id)
+      aio.devS2 = s2.id
     if src == dst:
       src.deviceHook = proc(msg: SpMsg) =
         src.sendMsg(msg)

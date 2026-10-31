@@ -68,6 +68,8 @@ proc unsubscribe*(eng: var Sub0Engine, topic: openArray[byte]) =
     raise newNngError(NNG_ENOENT, "Subscription not found")
 
 proc matchesTopic*(eng: Sub0Engine, frame: openArray[byte]): bool =
+  if eng.raw:
+    return true
   # WARN-02: Default is drop-all until at least one topic is registered.
   if eng.subscriptions.len == 0:
     return false

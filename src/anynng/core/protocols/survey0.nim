@@ -88,6 +88,31 @@ proc step*(eng: var Surveyor0Engine, ev: EngineEvent): seq[EngineAction] =
       result.add(EngineAction(kind: actClosePipe, pipeId: ev.pipeId, err: spErrProto))
       return
 
+    if eng.raw:
+      var offset = 0
+      var foundEnd = false
+      var hops = 0
+      while offset + 4 <= ev.rawFrame.len:
+        let w = getBe32(ev.rawFrame, offset)
+        offset += 4
+        inc hops
+        if hops > 8:
+          return
+        if (w and 0x80000000'u32) != 0:
+          foundEnd = true
+          break
+      if not foundEnd:
+        result.add(EngineAction(kind: actClosePipe, pipeId: ev.pipeId, err: spErrProto))
+        return
+      var msg: SpMsg
+      msg.header = ev.rawFrame[0 ..< offset]
+      msg.body = ev.rawFrame[offset .. ^1]
+      msg.pipeId = ev.pipeId
+      result.add(
+        EngineAction(kind: actDeliverRecv, ctxId: 0, msg: msg, pipeId: ev.pipeId)
+      )
+      return
+
     let id = getBe32(ev.rawFrame, 0)
     if id notin eng.surveyToCtx:
       # Response for an old, mismatched, or expired survey; drop silently
@@ -178,13 +203,14 @@ proc step*(eng: var Respondent0Engine, ev: EngineEvent): seq[EngineAction] =
       let word = getBe32(ev.rawFrame, offset)
       offset += 4
       inc hops
+      if hops > eng.maxTtl:
+        return
       if (word and 0x80000000'u32) != 0:
         foundBottom = true
         break
-      if hops > eng.maxTtl:
-        return
 
-    if not foundBottom or hops > eng.maxTtl:
+    if not foundBottom:
+      result.add(EngineAction(kind: actClosePipe, pipeId: ev.pipeId, err: spErrProto))
       return
 
     let header = ev.rawFrame[0 ..< offset]
@@ -214,13 +240,24 @@ proc step*(eng: var Respondent0Engine, ev: EngineEvent): seq[EngineAction] =
     )
   of evUserSend:
     if eng.raw:
-      var targetPipe = ev.msg.pipeId
-      var outgoingHeader = ev.msg.header
-      if outgoingHeader.len >= 4:
-        targetPipe = PipeId(getBe32(outgoingHeader, 0))
-        outgoingHeader = outgoingHeader[4 .. ^1]
-      let frame = outgoingHeader & ev.msg.body
-      result.add(EngineAction(kind: actSendPipe, pipeId: targetPipe, rawFrame: frame))
+      if ev.msg.header.len < 8:
+        result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
+        return
+      let targetPipe = PipeId(getBe32(ev.msg.header, 0))
+      var offset = 4
+      var hasBottom = false
+      while offset + 4 <= ev.msg.header.len:
+        let w = getBe32(ev.msg.header, offset)
+        offset += 4
+        if (w and 0x80000000'u32) != 0:
+          hasBottom = true
+          break
+      if not hasBottom:
+        result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
+        return
+      let frame = ev.msg.header[4 .. ^1] & ev.msg.body
+      if targetPipe in eng.pipes:
+        result.add(EngineAction(kind: actSendPipe, pipeId: targetPipe, rawFrame: frame))
       result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
       return
 

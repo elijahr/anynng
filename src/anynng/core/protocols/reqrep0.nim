@@ -26,9 +26,10 @@ type
     ctxToReqId*: Table[uint32, uint32]
     resendTimeMs*: int64
     raw*: bool
+    maxTtl*: uint32
 
 func initReq0Engine*(
-    raw: bool = false, resendTimeMs: int64 = DefaultReqResendTime
+    raw: bool = false, resendTimeMs: int64 = DefaultReqResendTime, maxTtl: uint32 = DefaultMaxTtl
 ): Req0Engine =
   result.pipes = @[]
   result.currentPipeIdx = 0
@@ -37,6 +38,7 @@ func initReq0Engine*(
   result.ctxToReqId = initTable[uint32, uint32]()
   result.resendTimeMs = resendTimeMs
   result.raw = raw
+  result.maxTtl = maxTtl
 
 proc nextRequestId*(eng: var Req0Engine): uint32 =
   let id = eng.nextReqId
@@ -146,11 +148,11 @@ proc step*(eng: var Req0Engine, ev: EngineEvent): seq[EngineAction] =
         let word = getBe32(ev.rawFrame, offset)
         offset += 4
         inc hops
+        if hops > int(eng.maxTtl):
+          return
         if (word and 0x80000000'u32) != 0:
           foundEnd = true
           break
-        if hops > 8:
-          return
       if not foundEnd:
         result.add(EngineAction(kind: actClosePipe, pipeId: ev.pipeId, err: spErrProto))
         return
@@ -251,12 +253,12 @@ proc step*(eng: var Rep0Engine, ev: EngineEvent): seq[EngineAction] =
       let word = getBe32(ev.rawFrame, offset)
       offset += 4
       inc hops
-      if (word and 0x80000000'u32) != 0:
-        foundBottom = true
-        break
       if hops > eng.maxTtl:
         # Exceeded TTL without finding bottom marker
         return
+      if (word and 0x80000000'u32) != 0:
+        foundBottom = true
+        break
 
     if not foundBottom:
       # Malformed: no request ID with bit 31 set found
@@ -287,6 +289,28 @@ proc step*(eng: var Rep0Engine, ev: EngineEvent): seq[EngineAction] =
       EngineAction(kind: actDeliverRecv, ctxId: ev.ctxId, msg: msg, pipeId: ev.pipeId)
     )
   of evUserSend:
+    if eng.raw:
+      if ev.msg.header.len < 8:
+        result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
+        return
+      let targetPipe = PipeId(getBe32(ev.msg.header, 0))
+      var offset = 4
+      var hasBottom = false
+      while offset + 4 <= ev.msg.header.len:
+        let w = getBe32(ev.msg.header, offset)
+        offset += 4
+        if (w and 0x80000000'u32) != 0:
+          hasBottom = true
+          break
+      if not hasBottom:
+        result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
+        return
+      let frame = ev.msg.header[4 .. ^1] & ev.msg.body
+      if targetPipe in eng.pipes:
+        result.add(EngineAction(kind: actSendPipe, pipeId: targetPipe, rawFrame: frame))
+      result.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
+      return
+
     var state: RepContextState
     var found = false
 

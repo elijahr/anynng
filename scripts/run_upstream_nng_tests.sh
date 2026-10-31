@@ -1,18 +1,33 @@
 #!/usr/bin/env bash
 set -o pipefail
 
+export STRESSTIME=1
+export STRESSPRESSURE=8
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "=== [anynng] Upstream nanomsg/nng v1.12.4 Specification Suite Runner ==="
+echo "=== [anynng] Upstream nanomsg/nng v2.1.0 Specification Suite Runner ==="
 
 # 1. Ensure upstream shallow clone is present in .cache/nng-upstream
 NNG_DIR=".cache/nng-upstream"
+if [ -d "$NNG_DIR" ]; then
+    CURRENT_TAG=$(git -C "$NNG_DIR" describe --tags --exact-match 2>/dev/null || true)
+    if [ "$CURRENT_TAG" != "v2.1.0" ]; then
+        echo "Updating $NNG_DIR to v2.1.0..."
+        rm -rf "$NNG_DIR"
+    fi
+fi
+
 if [ ! -d "$NNG_DIR" ]; then
-    echo "Cloning nanomsg/nng v1.12.4 into $NNG_DIR..."
+    echo "Cloning nanomsg/nng v2.1.0 into $NNG_DIR..."
     mkdir -p .cache
-    git clone --depth 1 --branch v1.12.4 https://github.com/nanomsg/nng.git "$NNG_DIR"
+    if [ -d "/tmp/nng-v2.1.0" ]; then
+        cp -R /tmp/nng-v2.1.0 "$NNG_DIR"
+    else
+        git clone --depth 1 --branch v2.1.0 https://github.com/nanomsg/nng.git "$NNG_DIR"
+    fi
 fi
 
 # 2. Build libanynng.dylib C-ABI shared library
@@ -33,12 +48,18 @@ TEST_FILES=(
     "$NNG_DIR/src/sp/protocol/pair1/pair1_poly_test.c"
     "$NNG_DIR/src/sp/protocol/reqrep0/req_test.c"
     "$NNG_DIR/src/sp/protocol/reqrep0/rep_test.c"
+    "$NNG_DIR/src/sp/protocol/reqrep0/xreq_test.c"
+    "$NNG_DIR/src/sp/protocol/reqrep0/xrep_test.c"
+    "$NNG_DIR/src/sp/protocol/reqrep0/reqstress_test.c"
     "$NNG_DIR/src/sp/protocol/pubsub0/pub_test.c"
     "$NNG_DIR/src/sp/protocol/pubsub0/sub_test.c"
+    "$NNG_DIR/src/sp/protocol/pubsub0/xsub_test.c"
     "$NNG_DIR/src/sp/protocol/pipeline0/push_test.c"
     "$NNG_DIR/src/sp/protocol/pipeline0/pull_test.c"
     "$NNG_DIR/src/sp/protocol/survey0/survey_test.c"
     "$NNG_DIR/src/sp/protocol/survey0/respond_test.c"
+    "$NNG_DIR/src/sp/protocol/survey0/xsurvey_test.c"
+    "$NNG_DIR/src/sp/protocol/survey0/xrespond_test.c"
     "$NNG_DIR/src/sp/protocol/bus0/bus_test.c"
 )
 
@@ -63,7 +84,11 @@ for t in "${TEST_FILES[@]}"; do
     echo "Running NUTS suite: $name"
     echo "------------------------------------------------------------"
     status=0
-    "$bin_path" || status=$?
+    if perl -e 'alarm 15; exec @ARGV' "$bin_path"; then
+        status=0
+    else
+        status=$?
+    fi
     if [ $status -eq 0 ]; then
         echo "PASS: $name"
         ((PASSED_COUNT++))

@@ -271,6 +271,7 @@ proc updateSendFd*(s: Socket) =
     let shouldBeWritable =
       not s.closed and canSendProto and (
         s.engineKind in {engPub0, engSurveyor0} or
+        (s.raw and s.engineKind in {engRep0, engRespondent0}) or
         (totalCap > 0 and totalUsed < totalCap)
       )
     if shouldBeWritable and not s.sendFdWritable:
@@ -519,6 +520,13 @@ proc feedPipeFrame*(s: Socket, pipeId: PipeId, frame: openArray[byte]) =
     elif s.engineKind in {engPub0, engSub0} or
         (s.engineKind == engPair1 and s.pair1Eng.polyamorous):
       return
+    elif s.raw and s.engineKind in {engReq0, engRep0, engSurveyor0, engRespondent0}:
+      if s.recvQueue.len < maxRecv + 20:
+        discard
+      elif s.engineKind == engSurveyor0:
+        return
+      else:
+        raise newNngError(NNG_ETIMEDOUT, "Receive buffer full")
     else:
       raise newNngError(NNG_ETIMEDOUT, "Receive buffer full")
   let ev = EngineEvent(
@@ -541,7 +549,14 @@ proc attachEndpoint(
     pid,
     s.proto,
     proc(data: openArray[byte]) =
-      ep.send(data)
+      try:
+        ep.send(data)
+      except NngError as e:
+        if (s.raw and s.engineKind in {engRep0, engRespondent0, engSurveyor0}) or
+           (s.engineKind in {engPub0, engSurveyor0, engBus0}):
+          discard
+        else:
+          raise e
       inc s.inFlight
       s.updateSendFd(),
     proc() =
@@ -583,7 +598,8 @@ proc setOpt*(s: Socket, name: string, val: bool) =
 
 proc setOpt*(s: Socket, name: string, val: int) =
   if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and
-      s.engineKind in {engPub0, engSub0, engBus0} and val == 0:
+      ((s.engineKind in {engPub0, engBus0} and val == 0) or
+       (s.engineKind == engSub0 and not s.raw and val == 0)):
     raise newNngError(NNG_EINVAL, "Buffer size 0 not supported on pub/sub/bus")
   s.options.setInt(name, val)
   if name == NNG_OPT_SENDBUF:
@@ -594,7 +610,9 @@ proc setOpt*(s: Socket, name: string, val: int) =
         discard s.sendQueue.popLast()
     s.updateSendFd()
   elif name == NNG_OPT_MAXTTL:
-    if s.engineKind == engRep0:
+    if s.engineKind == engReq0:
+      s.req0Eng.maxTtl = uint32(val)
+    elif s.engineKind == engRep0:
       s.rep0Eng.maxTtl = uint32(val)
     elif s.engineKind == engRespondent0:
       s.respondent0Eng.maxTtl = uint32(val)
@@ -665,6 +683,8 @@ proc getString*(s: Socket, name: string): string =
 
 # Context Implementation
 proc openContext*(s: Socket): Context =
+  if s.raw:
+    raise newNngError(NNG_ENOTSUP, "Contexts not supported on raw sockets")
   if s.engineKind in {engPair0, engPair1, engPub0, engPush0, engPull0, engBus0}:
     raise newNngError(NNG_ENOTSUP, "Contexts are not supported on this protocol")
   if s.engineKind == engSub0:
@@ -787,6 +807,10 @@ proc recvStr*(ctx: Context, timeoutMs: int = -1): string =
     copyMem(addr result[0], unsafeAddr body[0], body.len)
 
 proc setOpt*(ctx: Context, name: string, val: int) =
+  if (name == NNG_OPT_RECVBUF or name == NNG_OPT_SENDBUF) and
+      ((ctx.socket.engineKind in {engPub0, engBus0} and val == 0) or
+       (ctx.socket.engineKind == engSub0 and not ctx.socket.raw and val == 0)):
+    raise newNngError(NNG_EINVAL, "Buffer size 0 not supported on pub/sub/bus")
   ctx.options.setInt(name, val)
 
 proc setOpt*(ctx: Context, name: string, val: int64) =
@@ -1039,6 +1063,7 @@ proc start*(l: Listener) =
       )
       l.boundPort = tcpListener.boundPort
       l.options.setIntInternal(NNG_OPT_TCP_BOUND_PORT, l.boundPort)
+      l.options.setIntInternal(NNG_OPT_BOUND_PORT, l.boundPort)
       l.options.setSockAddrInternal(NNG_OPT_LOCADDR, "127.0.0.1:" & $l.boundPort)
       l.closeImpl = proc() =
         tcpListener.close()
@@ -1062,6 +1087,7 @@ proc start*(l: Listener) =
       )
       l.boundPort = tlsListener.boundPort
       l.options.setIntInternal(NNG_OPT_TCP_BOUND_PORT, l.boundPort)
+      l.options.setIntInternal(NNG_OPT_BOUND_PORT, l.boundPort)
       l.options.setSockAddrInternal(NNG_OPT_LOCADDR, "127.0.0.1:" & $l.boundPort)
       l.closeImpl = proc() =
         tlsListener.close()
@@ -1122,6 +1148,7 @@ proc start*(l: Listener) =
       )
       l.boundPort = wsListener.boundPort
       l.options.setIntInternal(NNG_OPT_TCP_BOUND_PORT, l.boundPort)
+      l.options.setIntInternal(NNG_OPT_BOUND_PORT, l.boundPort)
       l.options.setSockAddrInternal(NNG_OPT_LOCADDR, "127.0.0.1:" & $l.boundPort)
       l.closeImpl = proc() =
         wsListener.close()
@@ -1303,9 +1330,12 @@ proc close*(s: Socket) =
     when not defined(js):
       for fd in [s.recvFds[0], s.recvFds[1], s.sendFds[0], s.sendFds[1]]:
         discard posix.close(fd)
+    var ctxsToClose: seq[Context] = @[]
     for ctx in s.contexts.values:
-      ctx.close()
+      ctxsToClose.add(ctx)
     s.contexts.clear()
+    for ctx in ctxsToClose:
+      ctx.close()
     var pipesToClose: seq[Pipe] = @[]
     for p in s.pipes.values:
       pipesToClose.add(p)

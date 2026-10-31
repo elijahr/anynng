@@ -37,6 +37,7 @@ const
   NNG_EAMBIGUOUS* = 29
   NNG_EBADTYPE* = 30
   NNG_ECONNSHUT* = 31
+  NNG_ESTOPPED* = 999
   NNG_EINTERNAL* = 1000
 
 func nngStrError*(err: int): string =
@@ -105,6 +106,8 @@ func nngStrError*(err: int): string =
     "Incorrect type"
   of NNG_ECONNSHUT:
     "Connection shut down"
+  of NNG_ESTOPPED:
+    "Operation stopped"
   of NNG_EINTERNAL:
     "Internal error"
   else:
@@ -141,6 +144,12 @@ const
   NNG_OPT_RECONNMINT* = "reconnect-time-min"
   NNG_OPT_RECONNMAXT* = "reconnect-time-max"
   NNG_OPT_TCP_BOUND_PORT* = "tcp-bound-port"
+  NNG_OPT_BOUND_PORT* = "bound-port"
+  NNG_OPT_UDP_COPY_MAX* = "udp:copy-max"
+  NNG_OPT_UDP_CONN_RETRY* = "udp:conn-retry"
+  NNG_OPT_UDP_CONN_EXPIRE* = "udp:conn-expire"
+  NNG_OPT_UDP_MAX_PEERS* = "udp:max-peers"
+  NNG_OPT_DTLS_CONN_RATE* = "dtls:conn-rate"
   NNG_OPT_TCP_NODELAY* = "tcp-nodelay"
   NNG_OPT_TCP_KEEPALIVE* = "tcp-keepalive"
   NNG_OPT_TLS_CONFIG* = "tls-config"
@@ -258,7 +267,13 @@ proc initDefaultDescriptors() =
   registerOption(NNG_OPT_RECONNMINT, optKindDuration, optRw, {entSocket, entDialer})
   registerOption(NNG_OPT_RECONNMAXT, optKindDuration, optRw, {entSocket, entDialer})
   registerOption(NNG_OPT_TCP_BOUND_PORT, optKindInt, optRo, {entListener})
+  registerOption(NNG_OPT_BOUND_PORT, optKindInt, optRo, {entListener})
   registerOption("tcp:bound-port", optKindInt, optRo, {entListener})
+  registerOption(NNG_OPT_UDP_COPY_MAX, optKindSize, optRw, {entDialer, entListener})
+  registerOption(NNG_OPT_UDP_CONN_RETRY, optKindDuration, optRw, {entDialer})
+  registerOption(NNG_OPT_UDP_CONN_EXPIRE, optKindDuration, optRw, {entDialer, entListener})
+  registerOption(NNG_OPT_UDP_MAX_PEERS, optKindSize, optRw, {entListener})
+  registerOption(NNG_OPT_DTLS_CONN_RATE, optKindSize, optRw, {entListener})
   registerOption(NNG_OPT_RECVFD, optKindInt, optRo, {entSocket})
   registerOption(NNG_OPT_SENDFD, optKindInt, optRo, {entSocket})
   registerOption(
@@ -322,6 +337,7 @@ proc newOptionStore*(target: OptionTarget): OptionStore =
   of entListener:
     result.values[NNG_OPT_TCP_NODELAY] = initOptionValue(true)
     result.values[NNG_OPT_TCP_BOUND_PORT] = initOptionValue(0)
+    result.values[NNG_OPT_BOUND_PORT] = initOptionValue(0)
   of entPipe:
     result.values[NNG_OPT_TLS_VERIFIED] = initOptionValue(false)
     result.values[NNG_OPT_TLS_PEER_CN] = initOptionValue("")
