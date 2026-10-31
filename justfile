@@ -21,6 +21,10 @@ test-ts:
     @just compile-wasm
     npx vitest run
 
+# Upstream nanomsg/nng v1.12.4 NUTS C-ABI Specification Test Suite
+test-nng-spec:
+    bash scripts/run_upstream_nng_tests.sh
+
 # 3. Linter Execution
 lint:
     @just lint-nim

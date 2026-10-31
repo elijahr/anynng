@@ -9,28 +9,118 @@ export interface WasmModuleExports {
   anynng_wasm_version: () => number;
   anynng_alloc: (size: number) => number;
   anynng_free: (ptr: number) => void;
-  anynng_ws_dialer_subprotocol: (proto: number, outBuf: number, outCap: number) => number;
-  anynng_ws_listener_subprotocol: (proto: number, outBuf: number, outCap: number) => number;
-  anynng_req0_encode: (reqId: number, bodyPtr: number, bodyLen: number, outPtr: number) => number;
-  anynng_req0_decode: (framePtr: number, frameLen: number, outReqId: number, outBodyOffset: number, outBodyLen: number) => number;
-  anynng_rep0_encode: (reqId: number, bodyPtr: number, bodyLen: number, outPtr: number) => number;
-  anynng_pair1_encode: (hops: number, bodyPtr: number, bodyLen: number, outPtr: number) => number;
-  anynng_pair1_decode: (framePtr: number, frameLen: number, outHops: number, outBodyOffset: number, outBodyLen: number) => number;
-  anynng_sub0_matches: (topicPtr: number, topicLen: number, msgPtr: number, msgLen: number) => number;
-  anynng_survey0_encode: (surveyId: number, bodyPtr: number, bodyLen: number, outPtr: number) => number;
-  anynng_survey0_decode: (framePtr: number, frameLen: number, outSurveyId: number, outBodyOffset: number, outBodyLen: number) => number;
-  anynng_respondent0_encode: (surveyId: number, bodyPtr: number, bodyLen: number, outPtr: number) => number;
-  anynng_bus0_encode: (hops: number, bodyPtr: number, bodyLen: number, outPtr: number) => number;
-  anynng_bus0_decode: (framePtr: number, frameLen: number, outHops: number, outBodyOffset: number, outBodyLen: number) => number;
+  anynng_ws_dialer_subprotocol: (
+    proto: number,
+    outBuf: number,
+    outCap: number,
+  ) => number;
+  anynng_ws_listener_subprotocol: (
+    proto: number,
+    outBuf: number,
+    outCap: number,
+  ) => number;
+  anynng_req0_encode: (
+    reqId: number,
+    bodyPtr: number,
+    bodyLen: number,
+    outPtr: number,
+  ) => number;
+  anynng_req0_decode: (
+    framePtr: number,
+    frameLen: number,
+    outReqId: number,
+    outBodyOffset: number,
+    outBodyLen: number,
+  ) => number;
+  anynng_rep0_encode: (
+    reqId: number,
+    bodyPtr: number,
+    bodyLen: number,
+    outPtr: number,
+  ) => number;
+  anynng_pair1_encode: (
+    hops: number,
+    bodyPtr: number,
+    bodyLen: number,
+    outPtr: number,
+  ) => number;
+  anynng_pair1_decode: (
+    framePtr: number,
+    frameLen: number,
+    outHops: number,
+    outBodyOffset: number,
+    outBodyLen: number,
+  ) => number;
+  anynng_sub0_matches: (
+    topicPtr: number,
+    topicLen: number,
+    msgPtr: number,
+    msgLen: number,
+  ) => number;
+  anynng_survey0_encode: (
+    surveyId: number,
+    bodyPtr: number,
+    bodyLen: number,
+    outPtr: number,
+  ) => number;
+  anynng_survey0_decode: (
+    framePtr: number,
+    frameLen: number,
+    outSurveyId: number,
+    outBodyOffset: number,
+    outBodyLen: number,
+  ) => number;
+  anynng_respondent0_encode: (
+    surveyId: number,
+    bodyPtr: number,
+    bodyLen: number,
+    outPtr: number,
+  ) => number;
+  anynng_bus0_encode: (
+    hops: number,
+    bodyPtr: number,
+    bodyLen: number,
+    outPtr: number,
+  ) => number;
+  anynng_bus0_decode: (
+    framePtr: number,
+    frameLen: number,
+    outHops: number,
+    outBodyOffset: number,
+    outBodyLen: number,
+  ) => number;
   anynng_stream_encode_greeting: (proto: number, outPtr: number) => number;
-  anynng_stream_decode_greeting: (greetingPtr: number, outProto: number) => number;
-  anynng_stream_encode_frame: (bodyPtr: number, bodyLen: number, outPtr: number) => number;
+  anynng_stream_decode_greeting: (
+    greetingPtr: number,
+    outProto: number,
+  ) => number;
+  anynng_stream_encode_frame: (
+    bodyPtr: number,
+    bodyLen: number,
+    outPtr: number,
+  ) => number;
   anynng_stream_decode_frame_len: (headerPtr: number, outLen: number) => number;
-  anynng_udp_encode_header: (packetType: number, hops: number, flowId: number, seqNum: number, outPtr: number) => number;
-  anynng_udp_decode_header: (headerPtr: number, outType: number, outHops: number, outFlow: number, outSeq: number) => number;
+  anynng_udp_encode_header: (
+    packetType: number,
+    hops: number,
+    flowId: number,
+    seqNum: number,
+    outPtr: number,
+  ) => number;
+  anynng_udp_decode_header: (
+    headerPtr: number,
+    outType: number,
+    outHops: number,
+    outFlow: number,
+    outSeq: number,
+  ) => number;
   anynng_ctx_create?: () => number;
   anynng_ctx_close?: (ctxId: number) => number;
-  anynng_pipe_event_name?: (ev: number, outBuf: number, outCap: number) => number;
+  anynng_pipe_event_name?: (
+    ev: number,
+    outBuf: number,
+    outCap: number,
+  ) => number;
   [key: string]: unknown;
 }
 

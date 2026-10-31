@@ -98,8 +98,7 @@ export async function instantiateWasm(
     const response = await fetch(url);
     const bytes = await response.arrayBuffer();
     const result = (await WebAssembly.instantiate(bytes, importObject)) as
-      | WebAssembly.Instance
-      | { instance: WebAssembly.Instance };
+      WebAssembly.Instance | { instance: WebAssembly.Instance };
     return "instance" in result ? result.instance : result;
   }
 

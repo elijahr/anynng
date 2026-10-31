@@ -575,11 +575,12 @@ export class Req0Socket extends BaseSocket {
 
   override async contextSend(ctx: Context, payload: Uint8Array): Promise<void> {
     const bridge = await this.getBridge();
-    const reqId = (this.nextReqId++) & 0x7fffffff;
+    const reqId = this.nextReqId++ & 0x7fffffff;
     const frame = bridge.req0Encode(reqId, payload);
 
     const pending: PendingReq = { reqId, ctx, payload };
-    const resendMs = ctx.opts?.resendTimeMs ?? (this.getOpt("resendTime") as number) ?? 0;
+    const resendMs =
+      ctx.opts?.resendTimeMs ?? (this.getOpt("resendTime") as number) ?? 0;
     if (resendMs > 0) {
       pending.timer = setInterval(async () => {
         if (!this.isClosed && !ctx.isClosed && this.pendingReqs.has(reqId)) {
@@ -601,7 +602,7 @@ export class Req0Socket extends BaseSocket {
       return;
     }
     const bridge = await this.getBridge();
-    const reqId = (this.nextReqId++) & 0x7fffffff;
+    const reqId = this.nextReqId++ & 0x7fffffff;
     const frame = bridge.req0Encode(reqId, payload);
 
     const pending: PendingReq = { reqId, payload };
@@ -735,7 +736,7 @@ export class Surveyor0Socket extends BaseSocket {
 
   async send(payload: Uint8Array): Promise<void> {
     const bridge = await this.getBridge();
-    this.currentSurveyId = (this.nextSurveyId++) & 0x7fffffff;
+    this.currentSurveyId = this.nextSurveyId++ & 0x7fffffff;
     const duration = (this.getOpt("surveyTime") as number) ?? 1000;
     this.surveyDeadline = Date.now() + duration;
     const frame = bridge.survey0Encode(this.currentSurveyId, payload);

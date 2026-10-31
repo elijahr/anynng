@@ -17,7 +17,10 @@ import {
   Bus0Socket,
   PipeEvent,
 } from "../ts/index.js";
-import { createSpWsServer, createSpWssServer } from "./helpers/mock_ws_server.mjs";
+import {
+  createSpWsServer,
+  createSpWssServer,
+} from "./helpers/mock_ws_server.mjs";
 
 describe("anynng TypeScript / WASM Bridge Core", () => {
   let bridge: AnynngBridge;
@@ -75,7 +78,9 @@ describe("anynng TypeScript / WASM Bridge Core", () => {
     expect(listenerSubprotocol("surveyor0")).toBe("surveyor.sp.nanomsg.org");
 
     expect(dialerSubprotocol("respondent0")).toBe("surveyor.sp.nanomsg.org");
-    expect(listenerSubprotocol("respondent0")).toBe("respondent.sp.nanomsg.org");
+    expect(listenerSubprotocol("respondent0")).toBe(
+      "respondent.sp.nanomsg.org",
+    );
 
     expect(dialerSubprotocol("bus0")).toBe("bus.sp.nanomsg.org");
     expect(listenerSubprotocol("bus0")).toBe("bus.sp.nanomsg.org");
@@ -150,7 +155,9 @@ describe("anynng TypeScript / WASM Bridge Core", () => {
     const proto = bridge.streamDecodeGreeting(greeting);
     expect(proto).toBe(0x30);
 
-    const frame = bridge.streamEncodeFrame(new TextEncoder().encode("test-frame"));
+    const frame = bridge.streamEncodeFrame(
+      new TextEncoder().encode("test-frame"),
+    );
     expect(frame.length).toBe(8 + 10);
     const frameLen = bridge.streamDecodeFrameLen(frame.subarray(0, 8));
     expect(frameLen).toBe(10n);
@@ -227,7 +234,9 @@ describe("anynng TypeScript WebSocket SP Sockets (E2E)", () => {
 
     // Broadcast non-matching and matching messages from server
     serverHelper.broadcastBinary(new TextEncoder().encode("weather.sunny"));
-    serverHelper.broadcastBinary(new TextEncoder().encode("sports.baseball 5-2"));
+    serverHelper.broadcastBinary(
+      new TextEncoder().encode("sports.baseball 5-2"),
+    );
 
     const received = await subSock.recv();
     expect(new TextDecoder().decode(received)).toBe("sports.baseball 5-2");
@@ -361,9 +370,9 @@ describe("anynng Browser/Node Parity Features (Wave 3 Task 3.2)", () => {
       ctx2.close();
       ctx3.close();
       expect(ctx1.isClosed).toBe(true);
-      await expect(
-        ctx1.send(new TextEncoder().encode("fail")),
-      ).rejects.toThrow("Context is closed");
+      await expect(ctx1.send(new TextEncoder().encode("fail"))).rejects.toThrow(
+        "Context is closed",
+      );
 
       sock.close();
     } finally {

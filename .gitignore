@@ -33,7 +33,9 @@ node_modules/
 dist/
 
 *.wasm
+.cache/
 
 
 
 
+.nuts_ports

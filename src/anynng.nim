@@ -20,7 +20,7 @@ export types, options, tls, endian, url, stream_framing, ws_framing, udp_framing
 const projectVersion* = "0.0.1"
 
 type
-  EngineVariantKind = enum
+  EngineVariantKind* = enum
     engPair0
     engPair1
     engPub0
@@ -35,21 +35,21 @@ type
 
   Socket* = ref object
     proto*: SpProto
-    engineKind: EngineVariantKind
-    pair0Eng: Pair0Engine
-    pair1Eng: Pair1Engine
-    pub0Eng: Pub0Engine
-    sub0Eng: Sub0Engine
-    req0Eng: Req0Engine
-    rep0Eng: Rep0Engine
-    push0Eng: Push0Engine
-    pull0Eng: Pull0Engine
-    surveyor0Eng: Surveyor0Engine
-    respondent0Eng: Respondent0Engine
-    bus0Eng: Bus0Engine
-    pipes: Table[PipeId, Pipe]
-    recvQueue: seq[SpMsg]
-    onRecvCb: proc(msg: SpMsg) {.closure.}
+    engineKind*: EngineVariantKind
+    pair0Eng*: Pair0Engine
+    pair1Eng*: Pair1Engine
+    pub0Eng*: Pub0Engine
+    sub0Eng*: Sub0Engine
+    req0Eng*: Req0Engine
+    rep0Eng*: Rep0Engine
+    push0Eng*: Push0Engine
+    pull0Eng*: Pull0Engine
+    surveyor0Eng*: Surveyor0Engine
+    respondent0Eng*: Respondent0Engine
+    bus0Eng*: Bus0Engine
+    pipes*: Table[PipeId, Pipe]
+    recvQueue*: seq[SpMsg]
+    onRecvCb*: proc(msg: SpMsg) {.closure.}
     closed*: bool
     raw*: bool
     options*: OptionStore
@@ -199,7 +199,15 @@ proc executeActions*(s: Socket, actions: seq[EngineAction]) =
       discard
     of actFailContext:
       if act.err != spOk:
-        raise newException(ValueError, "Operation rejected by protocol: " & $act.err)
+        let nngErrCode =
+          case act.err
+          of spErrClosed: NNG_ECLOSED
+          of spErrTimedOut: NNG_ETIMEDOUT
+          of spErrNotSupported, spErrProto: NNG_ENOTSUP
+          of spErrCanceled: NNG_ECANCELED
+          of spErrMsgSize: NNG_EMSGSIZE
+          else: NNG_EINVAL
+        raise newNngError(nngErrCode, "Operation rejected by protocol: " & $act.err)
 
 proc stepEngine*(s: Socket, ev: EngineEvent): seq[EngineAction] =
   case s.engineKind
@@ -353,6 +361,8 @@ proc getString*(s: Socket, name: string): string =
 
 # Context Implementation
 proc openContext*(s: Socket): Context =
+  if s.engineKind in {engPair0, engPair1, engPush0, engPull0, engBus0}:
+    raise newNngError(NNG_ENOTSUP, "Contexts are not supported on this protocol")
   let cid = allocCtxId()
   new(result)
   result.socket = s
@@ -770,16 +780,16 @@ proc close*(l: Listener) =
       l.closeImpl()
 
 # High-Level Convenience Dial & Listen
-proc dial*(s: Socket, urlStr: string) =
-  let d = s.newDialer(urlStr)
-  d.start()
+proc dial*(s: Socket, urlStr: string): Dialer {.discardable.} =
+  result = s.newDialer(urlStr)
+  result.start()
 
 proc listen*(s: Socket, urlStr: string): Listener =
   result = s.newListener(urlStr)
   result.start()
 
 # Sending & Receiving on Socket
-proc send*(s: Socket, data: openArray[byte], ctxId: uint32 = 0) =
+proc sendMsg*(s: Socket, msg: SpMsg, ctxId: uint32 = 0) =
   if s.closed:
     raise newNngError(NNG_ECLOSED, "Socket is closed")
   let cid =
@@ -787,10 +797,12 @@ proc send*(s: Socket, data: openArray[byte], ctxId: uint32 = 0) =
       ctxId
     else:
       allocCtxId()
-  let msg = initSpMsg(data)
   let ev = EngineEvent(kind: evUserSend, ctxId: cid, msg: msg)
   let actions = s.stepEngine(ev)
   s.executeActions(actions)
+
+proc send*(s: Socket, data: openArray[byte], ctxId: uint32 = 0) =
+  s.sendMsg(initSpMsg(data), ctxId)
 
 proc send*(s: Socket, str: string) =
   var bytes = newSeq[byte](str.len)

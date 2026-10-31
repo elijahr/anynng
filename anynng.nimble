@@ -22,3 +22,6 @@ task test, "Run test suite":
 
 task docgen, "Generate API documentation for Starlight":
   exec "nim c -r tools/docgen.nim"
+
+task test_nng_spec, "Run upstream nanomsg/nng v1.12.4 NUTS specification test suite":
+  exec "bash scripts/run_upstream_nng_tests.sh"
