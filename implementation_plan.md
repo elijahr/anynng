@@ -79,7 +79,7 @@ For all development tracks:
 
 ### Wave 2: Native Transports (`tcp://`, `ipc://`, `udp://`, `ws://`), Browser/Node JS & `nimts` WASM Bridge, and Live C `libnng` Interop
 
-- [ ] **Task 2.1: Native Transports (`tcp://`, `ipc://`, `udp://`, `ws://`) & Live C `libnng` 1.12.4 Interop Suite** (`anynng-architect`)
+- [x] **Task 2.1: Native Transports (`tcp://`, `ipc://`, `udp://`, `ws://`) & Live C `libnng` 1.12.4 Interop Suite** (`anynng-architect`) — *WOVEN (`873623a`, Audit Token: `9d8ad337...`)*
   - *Dependency*: Task 1.1 (`task-core-engine`)
   - *Task ID*: `task-native-transports-interop`
   - *Strand*: `strand/task-native-transports-interop`
@@ -96,7 +96,7 @@ For all development tracks:
   - *Holistic Verification*: `nimble test` runs `t_native_transports.nim` and `t_interop_libnng.nim` against `/opt/homebrew/opt/nng/lib/libnng.dylib` with 0 failures.
   - *Weave*: `vine submit --author anynng-architect` -> Key 3 Audit by `anynng-auditor` -> `vine weave`.
 
-- [ ] **Task 2.2: Browser/Node `nim js` WebSocket Transport, `nimts` WASM Bridge, and TypeScript Socket Package (`ts/*`)** (`anynng-implementer`)
+- [x] **Task 2.2: Browser/Node `nim js` WebSocket Transport, `nimts` WASM Bridge, and TypeScript Socket Package (`ts/*`)** (`anynng-implementer`) — *WOVEN (`e49fb0c`, Audit Token: `fa35664d...`)*
   - *Dependency*: Task 1.1 (`task-core-engine`)
   - *Task ID*: `task-browser-js-wasm-nimts`
   - *Strand*: `strand/task-browser-js-wasm-nimts`
