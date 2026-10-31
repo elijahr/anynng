@@ -3,9 +3,11 @@
 # Coordinates with JavaScript WebSocket transport (js_ws) for browser/Node clients.
 # Licensed under MIT License.
 
+import std/tables
 import ./core/types
 import ./core/framing/ws_framing
 import ./core/framing/stream_framing
+import ./core/protocols/[pair0, pair1, pubsub0, reqrep0, pipeline0, survey0, bus0]
 
 template pArr(p: pointer or ptr byte): ptr UncheckedArray[byte] =
   cast[ptr UncheckedArray[byte]](p)
@@ -389,5 +391,341 @@ proc anynng_pipe_event_name*(ev: int32, outBuf: cstring, outCap: int32): int32 =
     copyMem(outBuf, cstring(name), name.len + 1)
     return int32(name.len)
   return int32(name.len)
+
+# ----------------------------------------------------------------------
+# Canonical ProtocolEngine State Machine Handle Table & C-ABI
+# ----------------------------------------------------------------------
+
+type
+  EngineKind* = enum
+    ekPair0, ekPair1, ekPub0, ekSub0, ekReq0, ekRep0,
+    ekPush0, ekPull0, ekSurveyor0, ekRespondent0, ekBus0
+
+  WasmEngine* = ref object
+    kind*: EngineKind
+    raw*: bool
+    maxTtl*: int
+    polyamorous*: bool
+    recvMaxSize*: int
+    resendTimeMs*: int64
+    surveyTimeMs*: int64
+    reconnectTimeMinMs*: int
+    reconnectTimeMaxMs*: int
+    pair0*: Pair0Engine
+    pair1*: Pair1Engine
+    pub0*: Pub0Engine
+    sub0*: Sub0Engine
+    req0*: Req0Engine
+    rep0*: Rep0Engine
+    push0*: Push0Engine
+    pull0*: Pull0Engine
+    surveyor0*: Surveyor0Engine
+    respondent0*: Respondent0Engine
+    bus0*: Bus0Engine
+
+var gEngines = initTable[int32, WasmEngine]()
+var gNextEngineHandle: int32 = 1
+var gStepResultBuf: seq[byte] = @[]
+
+proc anynng_engine_create*(
+    proto: int32,
+    raw: int32,
+    maxTtl: int32,
+    poly: int32,
+    resendMs: int64,
+    surveyMs: int64,
+): int32 =
+  let sp = toSpProto(proto)
+  let isRaw = raw != 0
+  let isPoly = poly != 0
+  let ttl = if maxTtl > 0: uint32(maxTtl) else: 8'u32
+  let resend = if resendMs > 0: resendMs else: 60000'i64
+  let survey = if surveyMs > 0: surveyMs else: 1000'i64
+
+  var eng = WasmEngine(
+    raw: isRaw,
+    maxTtl: int(ttl),
+    polyamorous: isPoly,
+    recvMaxSize: 1024 * 1024,
+    resendTimeMs: resend,
+    surveyTimeMs: survey,
+    reconnectTimeMinMs: 100,
+    reconnectTimeMaxMs: 10000,
+  )
+
+  case sp
+  of spPair0:
+    eng.kind = ekPair0
+    eng.pair0 = initPair0Engine(isRaw)
+  of spPair1:
+    eng.kind = ekPair1
+    eng.pair1 = initPair1Engine(isPoly, isRaw, ttl)
+  of spPub0:
+    eng.kind = ekPub0
+    eng.pub0 = initPub0Engine(isRaw)
+  of spSub0:
+    eng.kind = ekSub0
+    eng.sub0 = initSub0Engine(isRaw)
+  of spReq0:
+    eng.kind = ekReq0
+    eng.req0 = initReq0Engine(isRaw, resend)
+  of spRep0:
+    eng.kind = ekRep0
+    eng.rep0 = initRep0Engine(isRaw, ttl)
+  of spPush0:
+    eng.kind = ekPush0
+    eng.push0 = initPush0Engine(isRaw)
+  of spPull0:
+    eng.kind = ekPull0
+    eng.pull0 = initPull0Engine(isRaw)
+  of spSurveyor0:
+    eng.kind = ekSurveyor0
+    eng.surveyor0 = initSurveyor0Engine(isRaw, survey)
+  of spRespondent0:
+    eng.kind = ekRespondent0
+    eng.respondent0 = initRespondent0Engine(isRaw, ttl)
+  of spBus0:
+    eng.kind = ekBus0
+    eng.bus0 = initBus0Engine(isRaw)
+
+  let handle = gNextEngineHandle
+  inc gNextEngineHandle
+  gEngines[handle] = eng
+  return handle
+
+proc anynng_engine_destroy*(handle: int32): int32 =
+  if handle in gEngines:
+    gEngines.del(handle)
+    return 0
+  return -1
+
+proc anynng_engine_subscribe*(handle: int32, topicPtr: ptr byte, topicLen: int32): int32 =
+  if handle notin gEngines:
+    return -1
+  let eng = gEngines[handle]
+  if eng.kind != ekSub0:
+    return -1
+  var topic: seq[byte] = @[]
+  if topicLen > 0 and topicPtr != nil:
+    topic = newSeq[byte](topicLen)
+    copyMem(addr topic[0], topicPtr, topicLen)
+  eng.sub0.subscribe(topic)
+  return 0
+
+proc anynng_engine_unsubscribe*(handle: int32, topicPtr: ptr byte, topicLen: int32): int32 =
+  if handle notin gEngines:
+    return -1
+  let eng = gEngines[handle]
+  if eng.kind != ekSub0:
+    return -1
+  var topic: seq[byte] = @[]
+  if topicLen > 0 and topicPtr != nil:
+    topic = newSeq[byte](topicLen)
+    copyMem(addr topic[0], topicPtr, topicLen)
+  eng.sub0.unsubscribe(topic)
+  return 0
+
+proc anynng_engine_set_opt_int*(handle: int32, opt: int32, val: int64): int32 =
+  if handle notin gEngines:
+    return -1
+  let eng = gEngines[handle]
+  case opt
+  of 1:
+    eng.maxTtl = int(val)
+    if eng.kind == ekPair1: eng.pair1.maxTtl = uint32(val)
+    elif eng.kind == ekRep0: eng.rep0.maxTtl = uint32(val)
+    elif eng.kind == ekRespondent0: eng.respondent0.maxTtl = uint32(val)
+  of 2:
+    eng.raw = val != 0
+    if eng.kind == ekPair0: eng.pair0.raw = eng.raw
+    elif eng.kind == ekPair1: eng.pair1.raw = eng.raw
+    elif eng.kind == ekPub0: eng.pub0.raw = eng.raw
+    elif eng.kind == ekSub0: eng.sub0.raw = eng.raw
+    elif eng.kind == ekReq0: eng.req0.raw = eng.raw
+    elif eng.kind == ekRep0: eng.rep0.raw = eng.raw
+    elif eng.kind == ekPush0: eng.push0.raw = eng.raw
+    elif eng.kind == ekPull0: eng.pull0.raw = eng.raw
+    elif eng.kind == ekSurveyor0: eng.surveyor0.raw = eng.raw
+    elif eng.kind == ekRespondent0: eng.respondent0.raw = eng.raw
+    elif eng.kind == ekBus0: eng.bus0.raw = eng.raw
+  of 3:
+    eng.polyamorous = val != 0
+    if eng.kind == ekPair1: eng.pair1.polyamorous = eng.polyamorous
+  of 4:
+    eng.recvMaxSize = int(val)
+  of 5:
+    eng.resendTimeMs = val
+    if eng.kind == ekReq0: eng.req0.resendTimeMs = val
+  of 6:
+    eng.surveyTimeMs = val
+    if eng.kind == ekSurveyor0: eng.surveyor0.surveyTimeMs = val
+  of 7:
+    eng.reconnectTimeMinMs = int(val)
+  of 8:
+    eng.reconnectTimeMaxMs = int(val)
+  else:
+    return -1
+  return 0
+
+proc anynng_engine_get_opt_int*(handle: int32, opt: int32): int64 =
+  if handle notin gEngines:
+    return -1
+  let eng = gEngines[handle]
+  case opt
+  of 1: return int64(eng.maxTtl)
+  of 2: return if eng.raw: 1'i64 else: 0'i64
+  of 3: return if eng.polyamorous: 1'i64 else: 0'i64
+  of 4: return int64(eng.recvMaxSize)
+  of 5: return eng.resendTimeMs
+  of 6: return eng.surveyTimeMs
+  of 7: return int64(eng.reconnectTimeMinMs)
+  of 8: return int64(eng.reconnectTimeMaxMs)
+  else: return -1
+
+proc anynng_engine_set_opt*(handle: int32, name: cstring, val: int64): int32 =
+  if name == nil: return -1
+  let s = $name
+  case s
+  of "maxTtl", "ttl-max": return anynng_engine_set_opt_int(handle, 1, val)
+  of "raw": return anynng_engine_set_opt_int(handle, 2, val)
+  of "polyamorous", "pair1:polyamorous": return anynng_engine_set_opt_int(handle, 3, val)
+  of "recvMaxSize", "recv-max-size": return anynng_engine_set_opt_int(handle, 4, val)
+  of "resendTime", "resendTimeMs", "req:resend-time": return anynng_engine_set_opt_int(handle, 5, val)
+  of "surveyTime", "surveyTimeMs", "surveyor:survey-time": return anynng_engine_set_opt_int(handle, 6, val)
+  of "reconnectTimeMin", "reconnectTimeMinMs", "reconnect-time-min": return anynng_engine_set_opt_int(handle, 7, val)
+  of "reconnectTimeMax", "reconnectTimeMaxMs", "reconnect-time-max": return anynng_engine_set_opt_int(handle, 8, val)
+  else: return -1
+
+proc anynng_engine_get_opt*(handle: int32, name: cstring): int64 =
+  if name == nil: return -1
+  let s = $name
+  case s
+  of "maxTtl", "ttl-max": return anynng_engine_get_opt_int(handle, 1)
+  of "raw": return anynng_engine_get_opt_int(handle, 2)
+  of "polyamorous", "pair1:polyamorous": return anynng_engine_get_opt_int(handle, 3)
+  of "recvMaxSize", "recv-max-size": return anynng_engine_get_opt_int(handle, 4)
+  of "resendTime", "resendTimeMs", "req:resend-time": return anynng_engine_get_opt_int(handle, 5)
+  of "surveyTime", "surveyTimeMs", "surveyor:survey-time": return anynng_engine_get_opt_int(handle, 6)
+  of "reconnectTimeMin", "reconnectTimeMinMs", "reconnect-time-min": return anynng_engine_get_opt_int(handle, 7)
+  of "reconnectTimeMax", "reconnectTimeMaxMs", "reconnect-time-max": return anynng_engine_get_opt_int(handle, 8)
+  else: return -1
+
+proc anynng_engine_step*(
+    handle: int32,
+    evKind: int32,
+    pipeId: uint64,
+    ctxId: uint32,
+    inPtr: ptr byte,
+    inLen: int32,
+    nowMs: int64,
+    outPtr: ptr byte,
+    outCap: int32,
+): int32 =
+  if handle notin gEngines:
+    return -1
+  let eng = gEngines[handle]
+
+  var ev: EngineEvent
+  case evKind
+  of 0: ev.kind = evPipeAdded
+  of 1: ev.kind = evPipeRemoved
+  of 2: ev.kind = evPipeMessage
+  of 3: ev.kind = evTimerTick
+  of 4: ev.kind = evUserSend
+  of 5: ev.kind = evUserCancel
+  else: return -1
+
+  ev.pipeId = pipeId
+  ev.ctxId = ctxId
+  ev.nowMs = nowMs
+
+  if inLen > 0 and inPtr != nil:
+    if ev.kind == evPipeMessage:
+      ev.rawFrame = newSeq[byte](inLen)
+      copyMem(addr ev.rawFrame[0], inPtr, inLen)
+    elif ev.kind == evUserSend:
+      var body = newSeq[byte](inLen)
+      copyMem(addr body[0], inPtr, inLen)
+      ev.msg = initSpMsg(body)
+  elif ev.kind == evUserSend:
+    ev.msg = initSpMsg(@[])
+
+  var actions: seq[EngineAction]
+  case eng.kind
+  of ekPair0: actions = eng.pair0.step(ev)
+  of ekPair1: actions = eng.pair1.step(ev)
+  of ekPub0: actions = eng.pub0.step(ev)
+  of ekSub0: actions = eng.sub0.step(ev)
+  of ekReq0: actions = eng.req0.step(ev)
+  of ekRep0: actions = eng.rep0.step(ev)
+  of ekPush0: actions = eng.push0.step(ev)
+  of ekPull0: actions = eng.pull0.step(ev)
+  of ekSurveyor0:
+    if ev.kind == evPipeMessage and eng.surveyor0.inSurvey and eng.surveyor0.surveyDeadlineMs > 0 and ev.nowMs > eng.surveyor0.surveyDeadlineMs:
+      eng.surveyor0.inSurvey = false
+    actions = eng.surveyor0.step(ev)
+  of ekRespondent0: actions = eng.respondent0.step(ev)
+  of ekBus0:
+    if ev.kind == evUserSend and not eng.raw:
+      var frame = newSeq[byte](4 + ev.msg.body.len)
+      for i in 0 ..< ev.msg.body.len:
+        frame[4 + i] = ev.msg.body[i]
+      for p in eng.bus0.pipes:
+        actions.add(EngineAction(kind: actSendPipe, pipeId: p, rawFrame: frame))
+      actions.add(EngineAction(kind: actFinishSend, ctxId: ev.ctxId))
+    elif ev.kind == evPipeMessage and not eng.raw:
+      if ev.rawFrame.len >= 4:
+        let hops = readBe32(addr ev.rawFrame[0], 0)
+        if hops <= uint32(eng.maxTtl):
+          let msg = initSpMsg(ev.rawFrame[4 .. ^1], ev.rawFrame[0 ..< 4])
+          actions.add(EngineAction(kind: actDeliverRecv, ctxId: 0, msg: msg, pipeId: ev.pipeId))
+    else:
+      actions = eng.bus0.step(ev)
+
+  var totalLen = 4
+  for a in actions:
+    let payloadLen =
+      case a.kind
+      of actSendPipe: a.rawFrame.len
+      of actDeliverRecv: a.msg.body.len
+      else: 0
+    totalLen += 21 + payloadLen
+
+  gStepResultBuf.setLen(totalLen)
+  writeBe32(addr gStepResultBuf[0], 0, uint32(actions.len))
+  var offset = 4
+  for a in actions:
+    gStepResultBuf[offset] = byte(ord(a.kind))
+    writeBe64(addr gStepResultBuf[0], offset + 1, a.pipeId)
+    writeBe32(addr gStepResultBuf[0], offset + 9, a.ctxId)
+    writeBe32(addr gStepResultBuf[0], offset + 13, uint32(ord(a.err)))
+    let payloadLen =
+      case a.kind
+      of actSendPipe: a.rawFrame.len
+      of actDeliverRecv: a.msg.body.len
+      else: 0
+    writeBe32(addr gStepResultBuf[0], offset + 17, uint32(payloadLen))
+    if payloadLen > 0:
+      let srcPtr =
+        case a.kind
+        of actSendPipe: addr a.rawFrame[0]
+        of actDeliverRecv: addr a.msg.body[0]
+        else: nil
+      if srcPtr != nil:
+        copyMem(addr gStepResultBuf[offset + 21], srcPtr, payloadLen)
+    offset += 21 + payloadLen
+
+  if outPtr != nil and outCap >= totalLen:
+    copyMem(outPtr, addr gStepResultBuf[0], totalLen)
+    return int32(totalLen)
+
+  return int32(totalLen)
+
+proc anynng_engine_get_actions*(outPtr: ptr byte, outCap: int32): int32 =
+  let totalLen = gStepResultBuf.len
+  if outPtr != nil and outCap >= totalLen and totalLen > 0:
+    copyMem(outPtr, addr gStepResultBuf[0], totalLen)
+    return int32(totalLen)
+  return int32(totalLen)
 
 {.pop.}

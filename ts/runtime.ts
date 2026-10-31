@@ -3,15 +3,18 @@
  * Licensed under MIT License.
  */
 
-import type {
-  BridgeOptions,
-  WasmModuleExports,
-  AnynngInstance,
-  Req0Decoded,
-  Pair1Decoded,
-  Survey0Decoded,
-  Bus0Decoded,
-  UdpHeaderDecoded,
+import {
+  EngineEventKind,
+  EngineActionKind,
+  type BridgeOptions,
+  type WasmModuleExports,
+  type AnynngInstance,
+  type Req0Decoded,
+  type Pair1Decoded,
+  type Survey0Decoded,
+  type Bus0Decoded,
+  type UdpHeaderDecoded,
+  type EngineAction,
 } from "./types.js";
 
 export async function instantiateWasm(
@@ -162,14 +165,155 @@ export class AnynngBridge implements AnynngInstance {
     return this.exports.anynng_wasm_version();
   }
 
-  hello(): string {
-    if (!this.instance) throw new Error("WASM bridge not initialized");
-    return "hello from anynng WASM bridge";
+  engineCreate(
+    proto: number,
+    raw = false,
+    maxTtl = 8,
+    poly = false,
+    resendMs = 60000,
+    surveyMs = 1000,
+  ): number {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    return this.exports.anynng_engine_create(
+      proto,
+      raw ? 1 : 0,
+      maxTtl,
+      poly ? 1 : 0,
+      BigInt(resendMs),
+      BigInt(surveyMs),
+    );
   }
 
-  add(a: number, b: number): number {
-    if (!this.instance) throw new Error("WASM bridge not initialized");
-    return a + b;
+  engineDestroy(handle: number): void {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    this.exports.anynng_engine_destroy(handle);
+  }
+
+  engineSubscribe(handle: number, topic: string | Uint8Array): void {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    const bytes =
+      typeof topic === "string" ? new TextEncoder().encode(topic) : topic;
+    const ptr = this.writeBytes(bytes);
+    try {
+      this.exports.anynng_engine_subscribe(handle, ptr, bytes.length);
+    } finally {
+      this.free(ptr);
+    }
+  }
+
+  engineUnsubscribe(handle: number, topic: string | Uint8Array): void {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    const bytes =
+      typeof topic === "string" ? new TextEncoder().encode(topic) : topic;
+    const ptr = this.writeBytes(bytes);
+    try {
+      this.exports.anynng_engine_unsubscribe(handle, ptr, bytes.length);
+    } finally {
+      this.free(ptr);
+    }
+  }
+
+  engineSetOpt(handle: number, name: string, val: number | boolean): void {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    const nameBytes = new TextEncoder().encode(name + "\0");
+    const namePtr = this.writeBytes(nameBytes);
+    try {
+      const numVal = typeof val === "boolean" ? (val ? 1n : 0n) : BigInt(val);
+      this.exports.anynng_engine_set_opt(handle, namePtr, numVal);
+    } finally {
+      this.free(namePtr);
+    }
+  }
+
+  engineGetOpt(handle: number, name: string): number | boolean {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    const nameBytes = new TextEncoder().encode(name + "\0");
+    const namePtr = this.writeBytes(nameBytes);
+    try {
+      const val = Number(this.exports.anynng_engine_get_opt(handle, namePtr));
+      if (
+        name === "raw" ||
+        name === "polyamorous" ||
+        name === "pair1:polyamorous"
+      ) {
+        return val !== 0;
+      }
+      return val;
+    } finally {
+      this.free(namePtr);
+    }
+  }
+
+  engineStep(
+    handle: number,
+    evKind: EngineEventKind,
+    pipeId: bigint | number = 0,
+    ctxId = 0,
+    data: Uint8Array = new Uint8Array(0),
+    nowMs: number = Date.now(),
+  ): EngineAction[] {
+    if (!this.exports) throw new Error("WASM bridge not initialized");
+    const inPtr = data.length > 0 ? this.writeBytes(data) : 0;
+    const initialCap = Math.max(65536, data.length * 2 + 1024);
+    let outPtr = this.alloc(initialCap);
+    try {
+      let rc = this.exports.anynng_engine_step(
+        handle,
+        evKind,
+        BigInt(pipeId),
+        ctxId,
+        inPtr,
+        data.length,
+        BigInt(nowMs),
+        outPtr,
+        initialCap,
+      );
+      if (rc < 0) {
+        const needed = -rc;
+        this.free(outPtr);
+        outPtr = this.alloc(needed);
+        rc = this.exports.anynng_engine_get_actions(outPtr, needed);
+      }
+      if (rc < 4) return [];
+
+      const view = new DataView(this.memory.buffer, outPtr, rc);
+      const actionCount = view.getUint32(0, false);
+      const actions: EngineAction[] = [];
+      let offset = 4;
+
+      for (let i = 0; i < actionCount; i++) {
+        if (offset + 21 > rc) break;
+        const kind = view.getUint8(offset) as EngineActionKind;
+        const actPipeId = view.getBigUint64(offset + 1, false);
+        const actCtxId = view.getUint32(offset + 9, false);
+        const err = view.getInt32(offset + 13, false);
+        const payloadLen = view.getUint32(offset + 17, false);
+        offset += 21;
+
+        let actData: Uint8Array;
+        if (payloadLen > 0 && offset + payloadLen <= rc) {
+          actData = new Uint8Array(
+            this.memory.buffer.slice(outPtr + offset, outPtr + offset + payloadLen),
+          );
+          offset += payloadLen;
+        } else {
+          actData = new Uint8Array(0);
+        }
+
+        actions.push({
+          kind,
+          pipeId: actPipeId,
+          ctxId: actCtxId,
+          err,
+          data: actData,
+        });
+      }
+
+      return actions;
+    } finally {
+      if (inPtr) this.free(inPtr);
+      this.free(outPtr);
+    }
   }
 
   wsDialerSubprotocol(proto: number): string {

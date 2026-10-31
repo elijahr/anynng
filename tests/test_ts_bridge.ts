@@ -16,6 +16,8 @@ import {
   Respondent0Socket,
   Bus0Socket,
   PipeEvent,
+  EngineEventKind,
+  EngineActionKind,
 } from "../ts/index.js";
 import {
   createSpWsServer,
@@ -37,16 +39,93 @@ describe("anynng TypeScript / WASM Bridge Core", () => {
     expect(bridge.version()).toBe(1);
   });
 
-  it("invokes hello returning expected greeting", () => {
-    const greeting = bridge.hello();
-    expect(greeting).toBe("hello from anynng WASM bridge");
+  it("creates, steps, and destroys canonical ProtocolEngine in WASM", () => {
+    // Protocol ID 0x30 = REQ0
+    const handle = bridge.engineCreate(0x30, false, 8, false, 5000, 1000);
+    expect(handle).toBeGreaterThan(0);
+
+    // Step evPipeAdded
+    const addActs = bridge.engineStep(
+      handle,
+      EngineEventKind.evPipeAdded,
+      100n,
+    );
+    expect(addActs.length).toBe(0);
+
+    // Step evUserSend
+    const payload = new TextEncoder().encode("wasm-engine-payload");
+    const sendActs = bridge.engineStep(
+      handle,
+      EngineEventKind.evUserSend,
+      0n,
+      1,
+      payload,
+    );
+    expect(sendActs.length).toBeGreaterThanOrEqual(1);
+    expect(sendActs[0].kind).toBe(EngineActionKind.actSendPipe);
+    expect(sendActs[0].data.length).toBe(payload.length + 4);
+
+    // Step evPipeMessage with reply preserving the request ID
+    const repFrame = new Uint8Array(sendActs[0].data);
+    repFrame.set(new TextEncoder().encode("echo-"), 4);
+    const recvActs = bridge.engineStep(
+      handle,
+      EngineEventKind.evPipeMessage,
+      100n,
+      0,
+      repFrame,
+    );
+    expect(recvActs.length).toBe(1);
+    expect(recvActs[0].kind).toBe(EngineActionKind.actDeliverRecv);
+    expect(new TextDecoder().decode(recvActs[0].data)).toContain("echo-");
+
+    bridge.engineDestroy(handle);
   });
 
-  it("performs arithmetic add operation across boundary", () => {
-    const result = bridge.add(21, 21);
-    expect(result).toBe(42);
-    expect(bridge.add(0, 0)).toBe(0);
-    expect(bridge.add(-5, 5)).toBe(0);
+  it("verifies topic subscription and filtering via WASM ProtocolEngine", () => {
+    // Protocol ID 0x21 = SUB0
+    const handle = bridge.engineCreate(0x21, false, 8, false, 5000, 1000);
+    expect(handle).toBeGreaterThan(0);
+
+    bridge.engineSubscribe(handle, "telemetry.cpu");
+
+    bridge.engineStep(handle, EngineEventKind.evPipeAdded, 1n);
+
+    // Message with non-matching topic -> dropped
+    const nonMatch = new TextEncoder().encode("telemetry.mem:80%");
+    const acts1 = bridge.engineStep(
+      handle,
+      EngineEventKind.evPipeMessage,
+      1n,
+      0,
+      nonMatch,
+    );
+    expect(acts1.length).toBe(0);
+
+    // Message with matching topic -> delivered
+    const match = new TextEncoder().encode("telemetry.cpu:45%");
+    const acts2 = bridge.engineStep(
+      handle,
+      EngineEventKind.evPipeMessage,
+      1n,
+      0,
+      match,
+    );
+    expect(acts2.length).toBe(1);
+    expect(acts2[0].kind).toBe(EngineActionKind.actDeliverRecv);
+    expect(new TextDecoder().decode(acts2[0].data)).toBe("telemetry.cpu:45%");
+
+    bridge.engineUnsubscribe(handle, "telemetry.cpu");
+    const acts3 = bridge.engineStep(
+      handle,
+      EngineEventKind.evPipeMessage,
+      1n,
+      0,
+      match,
+    );
+    expect(acts3.length).toBe(0);
+
+    bridge.engineDestroy(handle);
   });
 
   it("verifies dialer and listener subprotocol mapping (CRIT-02)", () => {

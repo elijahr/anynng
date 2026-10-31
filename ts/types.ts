@@ -121,7 +121,75 @@ export interface WasmModuleExports {
     outBuf: number,
     outCap: number,
   ) => number;
+  anynng_engine_create: (
+    proto: number,
+    raw: number,
+    maxTtl: number,
+    poly: number,
+    resendMs: bigint,
+    surveyMs: bigint,
+  ) => number;
+  anynng_engine_destroy: (handle: number) => number;
+  anynng_engine_subscribe: (
+    handle: number,
+    topicPtr: number,
+    topicLen: number,
+  ) => number;
+  anynng_engine_unsubscribe: (
+    handle: number,
+    topicPtr: number,
+    topicLen: number,
+  ) => number;
+  anynng_engine_set_opt_int: (
+    handle: number,
+    opt: number,
+    val: bigint,
+  ) => number;
+  anynng_engine_get_opt_int: (handle: number, opt: number) => bigint;
+  anynng_engine_set_opt: (
+    handle: number,
+    namePtr: number,
+    val: bigint,
+  ) => number;
+  anynng_engine_get_opt: (handle: number, namePtr: number) => bigint;
+  anynng_engine_step: (
+    handle: number,
+    evKind: number,
+    pipeId: bigint,
+    ctxId: number,
+    inPtr: number,
+    inLen: number,
+    nowMs: bigint,
+    outPtr: number,
+    outCap: number,
+  ) => number;
+  anynng_engine_get_actions: (outPtr: number, outCap: number) => number;
   [key: string]: unknown;
+}
+
+export enum EngineEventKind {
+  evPipeAdded = 0,
+  evPipeRemoved = 1,
+  evPipeMessage = 2,
+  evTimerTick = 3,
+  evUserSend = 4,
+  evUserCancel = 5,
+}
+
+export enum EngineActionKind {
+  actSendPipe = 0,
+  actClosePipe = 1,
+  actDeliverRecv = 2,
+  actFinishSend = 3,
+  actFailContext = 4,
+}
+
+export interface EngineAction {
+  kind: EngineActionKind;
+  pipeId: bigint;
+  ctxId: number;
+  err: number;
+  data: Uint8Array;
 }
 
 export interface BridgeOptions {
@@ -188,8 +256,6 @@ export interface SocketOptions {
 export interface AnynngInstance {
   readonly ready: boolean;
   init(options?: BridgeOptions): Promise<this>;
-  hello(): string;
-  add(a: number, b: number): number;
 }
 
 export interface Req0Decoded {
