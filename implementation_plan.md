@@ -117,7 +117,7 @@ For all development tracks:
 
 ### Season `v0.2.0` — Wave 3: Full NNG Core Runtime, Options/Contexts/Timers/Devices, Native TLS (`tls+tcp://` & `wss://`), and JS/WASM Parity
 
-- [ ] **Task 3.1: Full NNG Core Runtime (`Options`, `Dialer`/`Listener` Port-0 & Auto-Reconnect, `Pipe`/`pipeNotify`, `Context`, Protocol Timers, `device`) & Native OpenSSL 3 TLS (`tls+tcp://`, `wss://`, `TlsConfig`)** (`anynng-architect`)
+- [x] **Task 3.1: Full NNG Core Runtime (`Options`, `Dialer`/`Listener` Port-0 & Auto-Reconnect, `Pipe`/`pipeNotify`, `Context`, Protocol Timers, `device`) & Native OpenSSL 3 TLS (`tls+tcp://`, `wss://`, `TlsConfig`)** (`anynng-architect`) — *WOVEN (`0f6e8e3`, Audit Token `a9d8373a...`)*
   - *Dependency*: Season `v0.2.0` Phase 3 (`task-v2-dialectic-parity` — WOVEN `60f5c7f`)
   - *Task ID*: `task-v2-core-runtime-tls`
   - *Strand*: `strand/task-v2-core-runtime-tls`
@@ -139,7 +139,7 @@ For all development tracks:
   - *Holistic Verification*: `nimble test` and `nim c -r -d:ssl -d:test_c_interop tests/t_interop_libnng.nim` pass 100%.
   - *Weave*: `vine submit --author anynng-architect` -> Key 3 Audit by `anynng-auditor` -> `vine weave`.
 
-- [ ] **Task 3.2: JS (`nim js`) & WASM/TypeScript (`nimts` `ts/*`) Full Parity (`wss://`, `inproc://`, Options, `Context`, Timers, `pipeNotify`, Auto-Reconnect)** (`anynng-implementer`)
+- [x] **Task 3.2: JS (`nim js`) & WASM/TypeScript (`nimts` `ts/*`) Full Parity (`wss://`, `inproc://`, Options, `Context`, Timers, `pipeNotify`, Auto-Reconnect)** (`anynng-implementer`) — *WOVEN (`1d8f1de`, Audit Token `cfaf2d6a...`)*
   - *Dependency*: Season `v0.2.0` Phase 3 (`task-v2-dialectic-parity` — WOVEN `60f5c7f`)
   - *Task ID*: `task-v2-js-wasm-parity`
   - *Strand*: `strand/task-v2-js-wasm-parity`
@@ -155,7 +155,7 @@ For all development tracks:
 
 ### Season `v0.2.0` — Wave 4: `<nng/nng.h>` C-ABI Library (`c_api.nim`) & Upstream `nanomsg/nng` v1.12.4 `nuts.h` Specification Test Runner
 
-- [ ] **Task 4.1: `<nng/nng.h>` C-ABI Export Layer (`src/anynng/c_api.nim`), `tests/upstream_shim/nuts.h`, and Automated Upstream `nanomsg/nng` v1.12.4 Spec Test Suite (`just test-nng-spec`)** (`anynng-architect`)
+- [x] **Task 4.1: `<nng/nng.h>` C-ABI Export Layer (`src/anynng/c_api.nim`), `tests/upstream_shim/nuts.h`, and Automated Upstream `nanomsg/nng` v1.12.4 Spec Test Suite (`just test-nng-spec`)** (`anynng-architect`) — *WOVEN (`a587913`, Audit Token `8fb66155...`)*
   - *Dependency*: Task 3.1 (`task-v2-core-runtime-tls`) and Task 3.2 (`task-v2-js-wasm-parity`)
   - *Task ID*: `task-v2-upstream-nuts-spec`
   - *Strand*: `strand/task-v2-upstream-nuts-spec`
