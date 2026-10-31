@@ -9,6 +9,11 @@ import anynng/core/framing/[stream_framing, ws_framing, udp_framing]
 import anynng/core/protocols/[pair0, pair1, pubsub0, reqrep0, pipeline0, survey0, bus0]
 import anynng/transports/inproc
 
+when not defined(js):
+  import std/[asyncdispatch, monotimes, times]
+  import anynng/transports/[native_tcp, native_ipc, native_udp, native_ws]
+  export native_tcp, native_ipc, native_udp, native_ws
+
 export types, endian, url, stream_framing, ws_framing, udp_framing
 
 const projectVersion* = "0.0.1"
@@ -41,7 +46,7 @@ type
     surveyor0Eng: Surveyor0Engine
     respondent0Eng: Respondent0Engine
     bus0Eng: Bus0Engine
-    endpoints: Table[PipeId, InprocEndpoint]
+    pipes: Table[PipeId, Pipe]
     recvQueue: seq[SpMsg]
     onRecvCb: proc(msg: SpMsg) {.closure.}
     closed*: bool
@@ -50,8 +55,8 @@ type
   Listener* = ref object
     socket*: Socket
     url*: string
-    inprocListener: InprocListener
     closed*: bool
+    closeImpl: proc() {.closure.}
 
   Context* = ref object
     socket*: Socket
@@ -69,7 +74,7 @@ proc newSocket*(proto: SpProto, raw: bool = false): Socket =
   result.raw = raw
   result.closed = false
   result.recvQueue = @[]
-  result.endpoints = initTable[PipeId, InprocEndpoint]()
+  result.pipes = initTable[PipeId, Pipe]()
 
   case proto
   of spPair0:
@@ -106,17 +111,17 @@ proc newSocket*(proto: SpProto, raw: bool = false): Socket =
     result.engineKind = engBus0
     result.bus0Eng = initBus0Engine(raw)
 
-proc executeActions(s: Socket, actions: seq[EngineAction]) =
+proc executeActions*(s: Socket, actions: seq[EngineAction]) =
   for act in actions:
     case act.kind
     of actSendPipe:
-      if act.pipeId in s.endpoints:
-        s.endpoints[act.pipeId].send(act.rawFrame)
+      if act.pipeId in s.pipes:
+        s.pipes[act.pipeId].send(act.rawFrame)
     of actClosePipe:
-      if act.pipeId in s.endpoints:
-        let ep = s.endpoints[act.pipeId]
-        s.endpoints.del(act.pipeId)
-        ep.close()
+      if act.pipeId in s.pipes:
+        let p = s.pipes[act.pipeId]
+        s.pipes.del(act.pipeId)
+        p.close()
     of actDeliverRecv:
       if s.onRecvCb != nil:
         let cb = s.onRecvCb
@@ -130,7 +135,7 @@ proc executeActions(s: Socket, actions: seq[EngineAction]) =
       if act.err != spOk:
         raise newException(ValueError, "Operation rejected by protocol: " & $act.err)
 
-proc stepEngine(s: Socket, ev: EngineEvent): seq[EngineAction] =
+proc stepEngine*(s: Socket, ev: EngineEvent): seq[EngineAction] =
   case s.engineKind
   of engPair0:
     s.pair0Eng.step(ev)
@@ -155,26 +160,44 @@ proc stepEngine(s: Socket, ev: EngineEvent): seq[EngineAction] =
   of engBus0:
     s.bus0Eng.step(ev)
 
-proc attachEndpoint(s: Socket, ep: InprocEndpoint) =
-  s.endpoints[ep.pipeId] = ep
-  let pid = ep.pipeId
-
-  ep.onMessage = proc(rawFrame: seq[byte]) =
-    if s.closed:
-      return
-    let ev = EngineEvent(kind: evPipeMessage, pipeId: pid, rawFrame: rawFrame)
-    let actions = s.stepEngine(ev)
-    s.executeActions(actions)
-
-  ep.onClose = proc() =
-    s.endpoints.del(pid)
-    let ev = EngineEvent(kind: evPipeRemoved, pipeId: pid)
-    let actions = s.stepEngine(ev)
-    s.executeActions(actions)
-
+proc attachCustomPipe*(s: Socket, pipe: Pipe) =
+  s.pipes[pipe.pipeId] = pipe
+  let pid = pipe.pipeId
   let ev = EngineEvent(kind: evPipeAdded, pipeId: pid)
   let actions = s.stepEngine(ev)
   s.executeActions(actions)
+
+proc detachCustomPipe*(s: Socket, pipeId: PipeId) =
+  if pipeId in s.pipes:
+    s.pipes.del(pipeId)
+    let ev = EngineEvent(kind: evPipeRemoved, pipeId: pipeId)
+    let actions = s.stepEngine(ev)
+    s.executeActions(actions)
+
+proc feedPipeFrame*(s: Socket, pipeId: PipeId, frame: openArray[byte]) =
+  if s.closed:
+    return
+  let ev = EngineEvent(kind: evPipeMessage, pipeId: pipeId, rawFrame: @frame)
+  let actions = s.stepEngine(ev)
+  s.executeActions(actions)
+
+proc attachEndpoint(s: Socket, ep: InprocEndpoint) =
+  let pid = ep.pipeId
+  ep.onMessage = proc(rawFrame: seq[byte]) =
+    s.feedPipeFrame(pid, rawFrame)
+
+  ep.onClose = proc() =
+    s.detachCustomPipe(pid)
+
+  let pipe = newPipe(
+    pid,
+    s.proto,
+    proc(data: openArray[byte]) =
+      ep.send(data),
+    proc() =
+      ep.close(),
+  )
+  s.attachCustomPipe(pipe)
 
 proc dial*(s: Socket, urlStr: string) =
   let parsed = parseSpUrl(urlStr)
@@ -189,32 +212,159 @@ proc dial*(s: Socket, urlStr: string) =
         discard,
     )
     s.attachEndpoint(ep)
-  else:
-    raise newException(
-      ValueError,
-      "Transport " & $parsed.kind &
-        " not supported in Wave 1 core (requires Wave 2 native/js driver)",
-    )
+  of tranTcp:
+    when not defined(js):
+      let host = if parsed.host.len > 0: parsed.host else: "127.0.0.1"
+      let pipe = waitFor connectTcpAsync(
+        host,
+        parsed.port,
+        s.proto,
+        proc(pid: PipeId, frame: seq[byte]) =
+          s.feedPipeFrame(pid, frame),
+        proc(pid: PipeId) =
+          s.detachCustomPipe(pid),
+      )
+      s.attachCustomPipe(pipe)
+    else:
+      raise
+        newException(ValueError, "TCP transport is only available on native C target")
+  of tranIpc:
+    when not defined(js):
+      let pipe = waitFor connectIpcAsync(
+        parsed.path,
+        s.proto,
+        proc(pid: PipeId, frame: seq[byte]) =
+          s.feedPipeFrame(pid, frame),
+        proc(pid: PipeId) =
+          s.detachCustomPipe(pid),
+      )
+      s.attachCustomPipe(pipe)
+    else:
+      raise
+        newException(ValueError, "IPC transport is only available on native C target")
+  of tranUdp:
+    when not defined(js):
+      let host = if parsed.host.len > 0: parsed.host else: "127.0.0.1"
+      let pipe = waitFor connectUdpAsync(
+        host,
+        parsed.port,
+        s.proto,
+        proc(pid: PipeId, frame: seq[byte]) =
+          s.feedPipeFrame(pid, frame),
+        proc(pid: PipeId) =
+          s.detachCustomPipe(pid),
+      )
+      s.attachCustomPipe(pipe)
+    else:
+      raise
+        newException(ValueError, "UDP transport is only available on native C target")
+  of tranWs:
+    when not defined(js):
+      let host = if parsed.host.len > 0: parsed.host else: "127.0.0.1"
+      let pipe = waitFor connectWsAsync(
+        host,
+        parsed.port,
+        parsed.path,
+        s.proto,
+        proc(pid: PipeId, frame: seq[byte]) =
+          s.feedPipeFrame(pid, frame),
+        proc(pid: PipeId) =
+          s.detachCustomPipe(pid),
+      )
+      s.attachCustomPipe(pipe)
+    else:
+      raise newException(
+        ValueError, "Native WebSocket dialer only on C target (use js_ws on js)"
+      )
 
 proc listen*(s: Socket, urlStr: string): Listener =
   let parsed = parseSpUrl(urlStr)
+  new(result)
+  result.socket = s
+  result.url = urlStr
+  result.closed = false
+
   case parsed.kind
   of tranInproc:
-    new(result)
-    result.socket = s
-    result.url = urlStr
-    result.closed = false
-
-    result.inprocListener = registerInprocListener(
+    let inprocListener = registerInprocListener(
       parsed.raw,
       s.proto,
       proc(ep: InprocEndpoint) =
         s.attachEndpoint(ep),
     )
-  else:
-    raise newException(
-      ValueError, "Transport " & $parsed.kind & " not supported in Wave 1 core"
-    )
+    result.closeImpl = proc() =
+      inprocListener.close()
+  of tranTcp:
+    when not defined(js):
+      let host = if parsed.host.len > 0: parsed.host else: "127.0.0.1"
+      let tcpListener = waitFor listenTcpAsync(
+        host,
+        parsed.port,
+        s.proto,
+        proc(pipe: Pipe) =
+          s.attachCustomPipe(pipe),
+        proc(pid: PipeId, frame: seq[byte]) =
+          s.feedPipeFrame(pid, frame),
+        proc(pid: PipeId) =
+          s.detachCustomPipe(pid),
+      )
+      result.closeImpl = proc() =
+        tcpListener.close()
+    else:
+      raise newException(ValueError, "TCP listener only available on native C target")
+  of tranIpc:
+    when not defined(js):
+      let ipcListener = waitFor listenIpcAsync(
+        parsed.path,
+        s.proto,
+        proc(pipe: Pipe) =
+          s.attachCustomPipe(pipe),
+        proc(pid: PipeId, frame: seq[byte]) =
+          s.feedPipeFrame(pid, frame),
+        proc(pid: PipeId) =
+          s.detachCustomPipe(pid),
+      )
+      result.closeImpl = proc() =
+        ipcListener.close()
+    else:
+      raise newException(ValueError, "IPC listener only available on native C target")
+  of tranUdp:
+    when not defined(js):
+      let host = if parsed.host.len > 0: parsed.host else: "127.0.0.1"
+      let udpListener = waitFor listenUdpAsync(
+        host,
+        parsed.port,
+        s.proto,
+        proc(pipe: Pipe) =
+          s.attachCustomPipe(pipe),
+        proc(pid: PipeId, frame: seq[byte]) =
+          s.feedPipeFrame(pid, frame),
+        proc(pid: PipeId) =
+          s.detachCustomPipe(pid),
+      )
+      result.closeImpl = proc() =
+        udpListener.close()
+    else:
+      raise newException(ValueError, "UDP listener only available on native C target")
+  of tranWs:
+    when not defined(js):
+      let host = if parsed.host.len > 0: parsed.host else: "127.0.0.1"
+      let wsListener = waitFor listenWsAsync(
+        host,
+        parsed.port,
+        parsed.path,
+        s.proto,
+        proc(pipe: Pipe) =
+          s.attachCustomPipe(pipe),
+        proc(pid: PipeId, frame: seq[byte]) =
+          s.feedPipeFrame(pid, frame),
+        proc(pid: PipeId) =
+          s.detachCustomPipe(pid),
+      )
+      result.closeImpl = proc() =
+        wsListener.close()
+    else:
+      raise newException(ValueError, "WS listener only available on native C target")
 
 proc send*(s: Socket, data: openArray[byte], ctxId: uint32 = 0) =
   if s.closed:
@@ -235,23 +385,40 @@ proc send*(s: Socket, str: string) =
     bytes[i] = byte(str[i])
   s.send(bytes)
 
-proc recvMsg*(s: Socket): SpMsg =
+proc recvMsg*(s: Socket, timeoutMs: int = 5000): SpMsg =
   if s.closed:
     raise newException(ValueError, "Socket is closed")
+  when not defined(js):
+    let start = getMonoTime()
+    while s.recvQueue.len == 0 and not s.closed:
+      asyncdispatch.poll(10)
+      if timeoutMs >= 0:
+        let elapsed = (getMonoTime() - start).inMilliseconds
+        if elapsed > timeoutMs:
+          raise newException(
+            SpTimeoutError, "Socket recvMsg timed out after " & $timeoutMs & "ms"
+          )
   if s.recvQueue.len > 0:
     result = s.recvQueue[0]
     s.recvQueue.delete(0)
   else:
     raise newException(ValueError, "No message ready in synchronous recvMsg")
 
-proc recv*(s: Socket): seq[byte] =
-  result = s.recvMsg().body
+proc recv*(s: Socket, timeoutMs: int = 5000): seq[byte] =
+  result = s.recvMsg(timeoutMs).body
 
-proc recvStr*(s: Socket): string =
-  let body = s.recv()
+proc recvStr*(s: Socket, timeoutMs: int = 5000): string =
+  let body = s.recv(timeoutMs)
   result = newString(body.len)
   for i in 0 ..< body.len:
     result[i] = char(body[i])
+
+proc poll*(s: Socket, timeoutMs: int = 0): bool =
+  if s.closed:
+    return false
+  when not defined(js):
+    asyncdispatch.poll(timeoutMs)
+  return s.recvQueue.len > 0
 
 proc hasRecv*(s: Socket): bool =
   s.recvQueue.len > 0
@@ -283,18 +450,18 @@ proc unsubscribe*(s: Socket, topic: string) =
 proc close*(s: Socket) =
   if not s.closed:
     s.closed = true
-    var eps: seq[InprocEndpoint] = @[]
-    for ep in s.endpoints.values:
-      eps.add(ep)
-    s.endpoints.clear()
-    for ep in eps:
-      ep.close()
+    var pipesToClose: seq[Pipe] = @[]
+    for p in s.pipes.values:
+      pipesToClose.add(p)
+    s.pipes.clear()
+    for p in pipesToClose:
+      p.close()
 
 proc close*(l: Listener) =
   if not l.closed:
     l.closed = true
-    if l.inprocListener != nil:
-      l.inprocListener.close()
+    if l.closeImpl != nil:
+      l.closeImpl()
     l.socket.close()
 
 # Convenience Socket Constructors

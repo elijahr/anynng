@@ -1,20 +1,47 @@
 # types.nim - Core Scalability Protocol types and Sans-I/O Engine Contract
 # Licensed under MIT License.
 
-type
-  SpProto* = enum
-    spPair0 = 0x10
-    spPair1 = 0x11
-    spPub0 = 0x20
-    spSub0 = 0x21
-    spReq0 = 0x30
-    spRep0 = 0x31
-    spPush0 = 0x50
-    spPull0 = 0x51
-    spSurveyor0 = 0x62
-    spRespondent0 = 0x63
-    spBus0 = 0x70
+type SpProto* = enum
+  spPair0 = 0x10
+  spPair1 = 0x11
+  spPub0 = 0x20
+  spSub0 = 0x21
+  spReq0 = 0x30
+  spRep0 = 0x31
+  spPush0 = 0x50
+  spPull0 = 0x51
+  spSurveyor0 = 0x62
+  spRespondent0 = 0x63
+  spBus0 = 0x70
 
+func toSpProto*(val: uint16): (bool, SpProto) =
+  case val
+  of uint16(spPair0):
+    (true, spPair0)
+  of uint16(spPair1):
+    (true, spPair1)
+  of uint16(spPub0):
+    (true, spPub0)
+  of uint16(spSub0):
+    (true, spSub0)
+  of uint16(spReq0):
+    (true, spReq0)
+  of uint16(spRep0):
+    (true, spRep0)
+  of uint16(spPush0):
+    (true, spPush0)
+  of uint16(spPull0):
+    (true, spPull0)
+  of uint16(spSurveyor0):
+    (true, spSurveyor0)
+  of uint16(spRespondent0):
+    (true, spRespondent0)
+  of uint16(spBus0):
+    (true, spBus0)
+  else:
+    (false, spPair0)
+
+type
   SpOption* = enum
     optRaw
     optRecvTimeout
@@ -41,8 +68,39 @@ type
     spErrNotSupported = 7
     spErrCanceled = 8
 
+  SpTimeoutError* = object of CatchableError
+
   PipeId* = uint64
 
+  Pipe* = ref object
+    pipeId*: PipeId
+    proto*: SpProto
+    sendImpl*: proc(data: openArray[byte]) {.closure.}
+    closeImpl*: proc() {.closure.}
+
+proc send*(p: Pipe, data: openArray[byte]) =
+  if p != nil and p.sendImpl != nil:
+    p.sendImpl(data)
+
+proc close*(p: Pipe) =
+  if p != nil and p.closeImpl != nil:
+    p.closeImpl()
+
+proc newPipe*(
+    pipeId: PipeId,
+    proto: SpProto,
+    sendCb: proc(data: openArray[byte]) {.closure.},
+    closeCb: proc() {.closure.},
+): Pipe =
+  Pipe(pipeId: pipeId, proto: proto, sendImpl: sendCb, closeImpl: closeCb)
+
+var gNextPipeId: PipeId = 1'u64
+
+proc allocPipeId*(): PipeId =
+  result = gNextPipeId
+  inc gNextPipeId
+
+type
   SpMsg* = object
     header*: seq[byte]
     body*: seq[byte]

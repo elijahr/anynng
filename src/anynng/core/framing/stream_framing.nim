@@ -3,10 +3,13 @@
 
 import ../types
 import ../endian
+import std/strutils
 
 const
   DefaultRecvMax* = 1048576'u64 # 1 MiB default (matching NNG_OPT_RECVMAXSZ)
   StreamGreetingLen* = 8
+  StreamMsgTypeInBand* = 0x01'u8
+  StreamHeaderLen* = 9 # 1-byte message type (0x01) + 8-byte BE uint64 length
 
 func encodeGreeting*(proto: SpProto): array[8, byte] =
   ## Encodes standard SP 8-byte stream greeting.
@@ -23,33 +26,6 @@ type VerifyGreetingResult* = object
   ok*: bool
   val*: SpProto
   err*: SpError
-
-func toSpProto*(val: uint16): (bool, SpProto) =
-  case val
-  of 0x10:
-    (true, spPair0)
-  of 0x11:
-    (true, spPair1)
-  of 0x20:
-    (true, spPub0)
-  of 0x21:
-    (true, spSub0)
-  of 0x30:
-    (true, spReq0)
-  of 0x31:
-    (true, spRep0)
-  of 0x50:
-    (true, spPush0)
-  of 0x51:
-    (true, spPull0)
-  of 0x62:
-    (true, spSurveyor0)
-  of 0x63:
-    (true, spRespondent0)
-  of 0x70:
-    (true, spBus0)
-  else:
-    (false, spPair0)
 
 func verifyGreeting*(
     greeting: openArray[byte], expectedPeerProto: SpProto
@@ -76,25 +52,50 @@ func verifyGreeting*(
 
   return VerifyGreetingResult(ok: true, val: proto, err: spOk)
 
-func encodeStreamFrame*(msg: SpMsg): seq[byte] =
+func encodeStreamFrame*(data: openArray[byte], hasTypeByte: bool = false): seq[byte] =
+  ## Encodes a raw byte slice with an 8-byte Big-Endian uint64 length prefix.
+  ## If hasTypeByte is true (IPC per sp-ipc-mapping), a 0x01 in-band byte precedes the length.
+  let totalLen = uint64(data.len)
+  let hdrLen = if hasTypeByte: 9 else: 8
+  result = newSeq[byte](hdrLen + int(totalLen))
+  if hasTypeByte:
+    result[0] = StreamMsgTypeInBand
+    putBe64(result, 1, totalLen)
+  else:
+    putBe64(result, 0, totalLen)
+  if data.len > 0:
+    for i in 0 ..< data.len:
+      result[hdrLen + i] = data[i]
+
+func encodeStreamFrame*(msg: SpMsg, hasTypeByte: bool = false): seq[byte] =
   ## Encodes an SP message with an 8-byte Big-Endian uint64 length prefix.
+  ## If hasTypeByte is true (IPC per sp-ipc-mapping), a 0x01 in-band byte precedes the length.
   let totalLen = uint64(msg.header.len + msg.body.len)
-  result = newSeq[byte](8 + int(totalLen))
-  putBe64(result, 0, totalLen)
+  let hdrLen = if hasTypeByte: 9 else: 8
+  result = newSeq[byte](hdrLen + int(totalLen))
+  if hasTypeByte:
+    result[0] = StreamMsgTypeInBand
+    putBe64(result, 1, totalLen)
+  else:
+    putBe64(result, 0, totalLen)
   if msg.header.len > 0:
     for i in 0 ..< msg.header.len:
-      result[8 + i] = msg.header[i]
+      result[hdrLen + i] = msg.header[i]
   if msg.body.len > 0:
     for i in 0 ..< msg.body.len:
-      result[8 + msg.header.len + i] = msg.body[i]
+      result[hdrLen + msg.header.len + i] = msg.body[i]
 
 type StreamDecoder* = object
   buf*: seq[byte]
   recvMax*: uint64
+  hasTypeByte*: bool
 
-func initStreamDecoder*(recvMax: uint64 = DefaultRecvMax): StreamDecoder =
+func initStreamDecoder*(
+    recvMax: uint64 = DefaultRecvMax, hasTypeByte: bool = false
+): StreamDecoder =
   result.buf = @[]
   result.recvMax = recvMax
+  result.hasTypeByte = hasTypeByte
 
 proc feed*(
     dec: var StreamDecoder, chunk: openArray[byte], onMsg: proc(frame: seq[byte])
@@ -106,8 +107,17 @@ proc feed*(
   for i in 0 ..< chunk.len:
     dec.buf[oldLen + i] = chunk[i]
 
-  while dec.buf.len >= 8:
-    let msgLen = getBe64(dec.buf, 0)
+  let hdrLen = if dec.hasTypeByte: 9 else: 8
+  while dec.buf.len >= hdrLen:
+    if dec.hasTypeByte:
+      let msgType = dec.buf[0]
+      if msgType != StreamMsgTypeInBand:
+        dec.buf.setLen(0)
+        raise
+          newException(ValueError, "Invalid stream message type: 0x" & msgType.toHex(2))
+
+    let lenOffset = if dec.hasTypeByte: 1 else: 0
+    let msgLen = getBe64(dec.buf, lenOffset)
     if msgLen > dec.recvMax:
       # Exceeded max receive size (HIGH-01)
       dec.buf.setLen(0)
@@ -117,19 +127,19 @@ proc feed*(
       )
 
     let frameLen = int(msgLen)
-    if dec.buf.len < 8 + frameLen:
+    if dec.buf.len < hdrLen + frameLen:
       # Incomplete frame, wait for more data
       break
 
     var frame = newSeq[byte](frameLen)
     for i in 0 ..< frameLen:
-      frame[i] = dec.buf[8 + i]
+      frame[i] = dec.buf[hdrLen + i]
 
     # Shift remaining buffer
-    let remaining = dec.buf.len - (8 + frameLen)
+    let remaining = dec.buf.len - (hdrLen + frameLen)
     if remaining > 0:
       for i in 0 ..< remaining:
-        dec.buf[i] = dec.buf[8 + frameLen + i]
+        dec.buf[i] = dec.buf[hdrLen + frameLen + i]
       dec.buf.setLen(remaining)
     else:
       dec.buf.setLen(0)
