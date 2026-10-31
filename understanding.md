@@ -360,3 +360,181 @@ From empirical inspection of `/Users/eek/Development/polyform/copier.yml`:
    - Extends `ts_bridge_strategy` choices: `[nimts, wasm, napi, none]`.
    - Wires up `@axiomantic/nimts`, Vite plugin integration, and automated TypeScript generation.
 
+---
+
+## Part 8: Full Target-Appropriate Transport Matrix & TLS Architecture (`tls+tcp://`, `wss://`)
+
+### 8.1 Multi-Target Transport Matrix
+
+To achieve 100% specification parity with NNG across all supported compilation targets (`nim c`, `nim js`, `nim wasm`), `anynng` partitions its transport matrix according to platform capabilities:
+
+| Transport Scheme | Address Syntax | Native (`nim c`) | Browser JS (`nim js`) | Browser / Standalone WASM (`nimts` / `ts/*`) | Underlying Mechanism |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| **`inproc://`** | `inproc://<name>` | **Yes** | **Yes** | **Yes** | In-process, zero-copy lockless ring buffer queue matching `proto_self == peer.proto_peer`. |
+| **`ipc://`** | `ipc:///path/to/socket` | **Yes** | No | No | POSIX Unix Domain Sockets (`AF_UNIX`) / Windows Named Pipes with 8-byte `\0SP\0` greeting. Alias `unix://`. |
+| **`tcp://`** | `tcp://[host]:port` | **Yes** | No | No | `std/asyncnet` TCP stream with `IPPROTO_TCP` `TCP_NODELAY`, 8-byte `\0SP\0` greeting, 64-bit BE length framing. |
+| **`tcp4://` / `tcp6://`** | `tcp4://[ip4]:port` | **Yes** | No | No | Explicit IPv4 (`AF_INET`) or IPv6 (`AF_INET6`) TCP stream binding. |
+| **`tls+tcp://`** | `tls+tcp://[host]:port` | **Yes** | No | No | Native TLS 1.2 / 1.3 socket over TCP via `std/net` (OpenSSL) or BearSSL, wrapping the 8-byte `\0SP\0` stream. |
+| **`tls+tcp4://` / `tls+tcp6://`** | `tls+tcp4://...` | **Yes** | No | No | Explicit IPv4/IPv6 TLS over TCP. |
+| **`ws://`** | `ws://host:port/path` | **Yes** | **Yes** | **Yes** | RFC 6455 WebSocket. Native uses `native_ws.nim`; JS/WASM uses `globalThis.WebSocket` (`binaryType="arraybuffer"`). |
+| **`ws4://` / `ws6://`** | `ws4://...` | **Yes** | No | No | Explicit IPv4/IPv6 WebSocket binding on native. |
+| **`wss://`** | `wss://host:port/path` | **Yes** | **Yes** | **Yes** | Secure WebSocket over TLS. Native wraps `native_ws` in TLS; JS/WASM inherits host browser/Node TLS stack. |
+| **`wss4://` / `wss6://`** | `wss4://...` | **Yes** | No | No | Explicit IPv4/IPv6 Secure WebSocket binding on native. |
+| **`udp://`** | `udp://[host]:port` | **Yes** | No | No | NNG v2 UDP datagram transport with 8-byte `udp_sp_msg` (CREQ/CACK handshake and periodic refresh). |
+| **`udp4://` / `udp6://`** | `udp4://...` | **Yes** | No | No | Explicit IPv4/IPv6 UDP datagram binding on native. |
+
+### 8.2 TLS Configuration Parity (`TlsConfig` $\leftrightarrow$ `nng_tls_config`)
+
+In native `libnng`, TLS is configured via the opaque object `nng_tls_config` declared in `<nng/supplemental/tls/tls.h>`. `anynng` provides complete functional parity via `TlsConfig`:
+
+1. **Operating Modes (`nng_tls_mode`)**:
+   - `nngTlsModeClient = 1`: Initiates TLS handshake as client, performs SNI and certificate validation.
+   - `nngTlsModeServer = 2`: Listens for incoming TLS connections, presents server certificate, optionally validates client certificates.
+
+2. **Authentication Modes (`nng_tls_auth_mode`)**:
+   - `nngTlsAuthModeNone = 0`: No certificate verification (e.g. self-signed test setups).
+   - `nngTlsAuthModeOptional = 1`: Client certificate is verified if presented, but connection proceeds if omitted.
+   - `nngTlsAuthModeRequired = 2` (Default for clients): Peer certificate MUST be verified against trusted CA root; fails handshake with `NNG_EPEERAUTH` (`27`) on validation error.
+
+3. **Certificate & Key Management**:
+   - `caChain(certPem: string, crlPem: string = "")`: Adds CA root certificates and optional CRL from PEM memory strings (`nng_tls_config_ca_chain`).
+   - `ownCert(certPem: string, keyPem: string, pass: string = "")`: Loads local certificate and private key from PEM memory strings (`nng_tls_config_own_cert`).
+   - `caFile(path: string)`: Configures CA root certificates from disk file (`nng_tls_config_ca_file`).
+   - `certKeyFile(certPath: string, keyPath: string = "")`: Loads local certificate and optional separate key file from disk paths (`nng_tls_config_cert_key_file`).
+   - `serverName(name: string)`: Sets the Server Name Indication (SNI) string sent in TLS ClientHello and verified against server cert CN/SAN (`nng_tls_config_server_name`).
+
+4. **Runtime Pipe TLS Introspection**:
+   Once a `tls+tcp://` or `wss://` pipe is established, the following read-only options are queryable on the `Pipe` instance:
+   - `NNG_OPT_TLS_VERIFIED = "tls-verified"` (`bool`): `true` if peer certificate was cryptographically verified.
+   - `NNG_OPT_TLS_PEER_CN = "tls-peer-cn"` (`string`): The Common Name (CN) from the subject of the peer certificate.
+   - `NNG_OPT_TLS_PEER_ALT_NAMES = "tls-peer-alt-names"` (`seq[string]`): Subject Alternative Names (SANs) from the peer certificate.
+
+---
+
+## Part 9: Full NNG Core Runtime & Protocol Parity Specification
+
+### 9.1 Strongly-Typed Option Registry (`getopt` / `setopt`)
+
+NNG provides dynamic option get/set operations on Sockets, Dialers, Listeners, Pipes, and Contexts (`nng_socket_get`, `nng_socket_set`, `nng_dialer_get`, `nng_dialer_set`, `nng_listener_get`, `nng_listener_set`, `nng_pipe_get`, `nng_ctx_get`, `nng_ctx_set`).
+
+`anynng` models the Option Registry with exact NNG error taxonomy:
+
+| NNG Error Name | Numeric Code | Trigger Condition |
+| :--- | :---: | :--- |
+| **`NNG_EBADTYPE`** | `30` | Option exists on the target entity, but caller requested or supplied the wrong type (e.g. calling `getInt` on a `string` option, or passing `bool` to a `duration` option). |
+| **`NNG_EREADONLY`** | `24` | Attempted to set an option that is read-only (e.g. `NNG_OPT_LOCADDR`, `NNG_OPT_URL`, `NNG_OPT_TCP_BOUND_PORT`, or `NNG_OPT_TLS_VERIFIED` on a pipe). |
+| **`NNG_EWRITEONLY`** | `25` | Attempted to get an option that is write-only (e.g. `NNG_OPT_SUB_SUBSCRIBE` or `NNG_OPT_SUB_UNSUBSCRIBE`). |
+| **`NNG_ENOTSUP`** | `9` | Option is not supported on this entity type, transport backend, or protocol family. |
+| **`NNG_EINVAL`** | `3` | Supplied value is malformed or out of valid range (e.g. setting `maxTtl` to `0` or `> 255`, or negative buffer size). |
+
+#### Complete Universal Option Table:
+- `NNG_OPT_SOCKNAME = "socket-name"` (`string`, rw on Socket)
+- `NNG_OPT_RAW = "raw"` (`bool`, ro on Socket after open)
+- `NNG_OPT_PROTO = "protocol"` (`int`, ro on Socket)
+- `NNG_OPT_PROTONAME = "protocol-name"` (`string`, ro on Socket)
+- `NNG_OPT_PEER = "peer"` (`int`, ro on Socket)
+- `NNG_OPT_PEERNAME = "peer-name"` (`string`, ro on Socket)
+- `NNG_OPT_RECVBUF = "recv-buffer"` (`int`, rw on Socket/Context, default 128)
+- `NNG_OPT_SENDBUF = "send-buffer"` (`int`, rw on Socket/Context, default 128)
+- `NNG_OPT_RECVTIMEO = "recv-timeout"` (`nng_duration`, milliseconds, rw on Socket/Context, default -1 = infinite)
+- `NNG_OPT_SENDTIMEO = "send-timeout"` (`nng_duration`, milliseconds, rw on Socket/Context, default -1 = infinite)
+- `NNG_OPT_LOCADDR = "local-address"` (`SockAddr`, ro on Listener/Pipe)
+- `NNG_OPT_REMADDR = "remote-address"` (`SockAddr`, ro on Pipe)
+- `NNG_OPT_URL = "url"` (`string`, ro on Dialer/Listener/Pipe)
+- `NNG_OPT_MAXTTL = "ttl-max"` (`int`, rw on Socket, bounds 1..255, default 8)
+- `NNG_OPT_RECONNMINT = "reconnect-time-min"` (`nng_duration`, rw on Socket/Dialer, default 100ms)
+- `NNG_OPT_RECONNMAXT = "reconnect-time-max"` (`nng_duration`, rw on Socket/Dialer, default 8000ms)
+- `NNG_OPT_TCP_BOUND_PORT = "tcp:bound-port"` (`int`, ro on Listener after start, port allocated by OS)
+- `NNG_OPT_TCP_NODELAY = "tcp-nodelay"` (`bool`, rw on Socket/Dialer/Listener, default true)
+- `NNG_OPT_TCP_KEEPALIVE = "tcp-keepalive"` (`bool`, rw on Socket/Dialer/Listener)
+
+### 9.2 First-Class `Dialer` & `Listener` Two-Step Lifecycle
+
+In addition to one-line convenience functions (`dial(url)`, `listen(url)`), NNG supports fine-grained two-step initialization:
+1. **Creation**:
+   ```nim
+   let d = dialerCreate(sock, "tcp://127.0.0.1:5555")
+   let l = listenerCreate(sock, "tcp://127.0.0.1:0")
+   ```
+2. **Configuration**: Setting options before network bind or connect:
+   ```nim
+   d.setOpt(NNG_OPT_RECONNMINT, 50)
+   d.setOpt(NNG_OPT_RECONNMAXT, 2000)
+   l.setOpt(NNG_OPT_TCP_NODELAY, true)
+   ```
+3. **Start**:
+   ```nim
+   await l.start()
+   let boundPort = l.getInt(NNG_OPT_TCP_BOUND_PORT) # Discovers OS-allocated ephemeral port!
+   await d.start()
+   ```
+4. **Background Reconnection**:
+   If a dialer's connection is severed or the remote listener is temporarily offline, the dialer automatically enters an exponential backoff reconnection loop starting at `reconnect-time-min` (default 100ms) and doubling up to `reconnect-time-max` (default 8000ms) with $\pm 10\%$ jitter.
+
+### 9.3 First-Class `Pipe` Introspection & Lifecycle Hooks
+
+Pipes represent active network connections. In `anynng`:
+- Every incoming message (`SpMsg`) records the receiving `pipe: Pipe`.
+- Sockets can register pipe event hooks via `pipeNotify(ev: PipeEvent, cb: PipeCallback)`:
+  - `pipeEvAddPre` (`0`): Fired just before pipe is accepted into the protocol engine. Returning an error cancels the pipe.
+  - `pipeEvAddPost` (`1`): Fired immediately after pipe is added and ready for traffic.
+  - `pipeEvRemPost` (`2`): Fired when pipe disconnects or closes.
+- Direct pipe operations: `p.close()` drops a specific connection; `p.id` returns a unique 32-bit identifier; `p.socket`, `p.dialer`, and `p.listener` provide back-references.
+
+### 9.4 Concurrent `Context` (`nng_ctx`) Multiplexing
+
+Contexts allow multiple independent asynchronous operations (particularly concurrent `REQ0` requests or `SURVEYOR0` surveys) to share a single socket and its underlying pipes:
+- Each `Context` maintains its own `state`, `timeout`, and `reqId` tracking.
+- Context send/recv operations are completely interleaved across active pipes without blocking or colliding with peers.
+- `req0.nim` allocates unique 31-bit IDs with bit 31 set per context, routing replies back to the exact matching context.
+
+### 9.5 Raw Mode Sockets & Device Forwarding (`nng_device`)
+
+When a socket is opened in raw mode (`raw = true` / `NNG_OPT_RAW`):
+- Protocol header processing is bypassed; the application receives and transmits raw wire frames with full backtrace headers intact.
+- `device(s1, s2)` implements an asynchronous bidirectional message forwarder:
+  - Messages received on `s1` are forwarded directly to `s2`.
+  - Messages received on `s2` are forwarded directly to `s1`.
+  - Fails with `NNG_EINVAL` (`3`) if either `s1` or `s2` is not in raw mode.
+  - Cleanly shuts down when either socket is closed.
+
+---
+
+## Part 10: Upstream `nanomsg/nng` v1.12.4 C ABI & Specification Test Harness
+
+### 10.1 C ABI Export Architecture (`src/anynng/c_api.nim`)
+
+To prove 100% literal specification compliance against the gold standard upstream NNG test suite, `anynng` implements a C ABI export module (`src/anynng/c_api.nim`) compiled with `{.exportc, cdecl.}`:
+
+```mermaid
+flowchart LR
+    UpstreamTests["Unmodified Upstream NNG Tests\n(*_test.c from nanomsg/nng v1.12.4)"]
+    NutsShim["tests/upstream_shim/nuts.h\n(NUTS Assertions & Fixtures)"]
+    Header["<nng/nng.h> & Protocol Headers"]
+    AnynngCAbi["src/anynng/c_api.nim\n(Pure Nim {.exportc, cdecl.} C ABI)"]
+    AnynngCore["anynng Core Engine\n(Sans-I/O Protocols & Native Transports)"]
+
+    UpstreamTests --> NutsShim
+    UpstreamTests --> Header
+    Header -.-> AnynngCAbi
+    AnynngCAbi --> AnynngCore
+```
+
+`c_api.nim` exports:
+- Socket lifecycle: `nng_open`, `nng_close`, `nng_dial`, `nng_listen`, `nng_send`, `nng_recv`
+- Protocol constructors: `nng_pair0_open`, `nng_pair0_open_raw`, `nng_pair1_open`, `nng_pair1_open_raw`, `nng_pub0_open`, `nng_pub0_open_raw`, `nng_sub0_open`, `nng_sub0_open_raw`, `nng_req0_open`, `nng_req0_open_raw`, `nng_rep0_open`, `nng_rep0_open_raw`, `nng_push0_open`, `nng_push0_open_raw`, `nng_pull0_open`, `nng_pull0_open_raw`, `nng_surveyor0_open`, `nng_surveyor0_open_raw`, `nng_respondent0_open`, `nng_respondent0_open_raw`, `nng_bus0_open`, `nng_bus0_open_raw`
+- Endpoint lifecycle: `nng_dialer_create`, `nng_dialer_start`, `nng_dialer_close`, `nng_listener_create`, `nng_listener_start`, `nng_listener_close`
+- Pipe & Option APIs: `nng_pipe_notify`, `nng_pipe_close`, `nng_socket_get_*`, `nng_socket_set_*`, `nng_dialer_get_*`, `nng_dialer_set_*`, `nng_listener_get_*`, `nng_listener_set_*`
+- Context & AIO: `nng_ctx_open`, `nng_ctx_close`, `nng_ctx_send`, `nng_ctx_recv`, `nng_aio_alloc`, `nng_aio_free`, `nng_aio_wait`, `nng_aio_result`
+- Device: `nng_device`, `nng_device_aio`
+
+### 10.2 Upstream Spec Test Harness Execution (`scripts/run_upstream_nng_tests.sh`)
+
+1. **Repository Purity (Pillar 5 Carcass Purge)**: Unmodified upstream C test files from `nanomsg/nng` v1.12.4 are **never** committed into `anynng`'s git repository.
+2. **Ephemeral Caching**: `scripts/run_upstream_nng_tests.sh` clones `https://github.com/nanomsg/nng` at tag `v1.12.4` (shallow clone `--depth 1 -b v1.12.4`) into `.cache/nng-upstream/` (git-ignored).
+3. **Compilation & Linkage**:
+   - `c_api.nim` compiles into `libanynng_c.a` (or dynamic library).
+   - Test files (e.g. `tests/reqrep.c`, `tests/pubsub.c`, `tests/pipeline.c`) compile using `clang` / `gcc`, including `-I.cache/nng-upstream/include -Itests/upstream_shim` and linking against `libanynng_c`.
+4. **Target `just test-nng-spec`**:
+   The justfile exposes `just test-nng-spec`, running the automated suite and confirming green status across all upstream specification tests.
+

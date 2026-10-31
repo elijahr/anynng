@@ -81,12 +81,25 @@ All 13 findings surfaced during Stage 1 Fact-Check Gate and Stage 3 Adversarial 
 | **`WARN-03`** | WARN | Ergonomics | SURVEYOR0 end-of-survey normal termination contract | Documented in `design.md` §4 that survey timeout cleanly completes survey collection window without throwing a fatal error. | **RESOLVED** |
 | **`WARN-04`** | WARN | Compliance | WebSocket frame masking compliance (client vs. server) | Documented in `design.md` §3.2 that dialers emit 4-byte random masked frames while listeners emit unmasked frames per RFC 6455 §5.3. | **RESOLVED** |
 
+### Season v0.2.0 Phase 3: Full NNG Parity & Upstream nuts.h Spec Harness Audit
+
+| Defect ID | Severity | Category | Description | Empirical Citation & Remediation | Resolution Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`CRIT-06`** | CRITICAL | Security / TLS | Missing `TlsConfig` parity with `nng_tls_config` | In NNG `<nng/supplemental/tls/tls.h>`, TLS requires fine-grained modes (`CLIENT`/`SERVER`), auth modes (`NONE`/`OPTIONAL`/`REQUIRED`), SNI `server_name`, and PEM memory vs file path configuration. Fully specified in `understanding.md` §8.2 and `design.md` §10.1. | **RESOLVED** |
+| **`CRIT-07`** | CRITICAL | Protocol Error | Option get/set error code taxonomy divergence | NNG enforces exact numeric errors for option failures (`NNG_EBADTYPE=30`, `NNG_EREADONLY=24`, `NNG_EWRITEONLY=25`, `NNG_ENOTSUP=9`, `NNG_EINVAL=3`). Specified in `understanding.md` §9.1 and `design.md` §10.2. | **RESOLVED** |
+| **`CRIT-08`** | CRITICAL | Concurrency / Tests | Port collision hazard in parallel test suites | Hardcoded ports fail under concurrent test execution. Specified dynamic OS port-0 binding (`tcp://127.0.0.1:0`) and ephemeral port discovery via `NNG_OPT_TCP_BOUND_PORT` in `understanding.md` §9.2 and `design.md` §10.3. | **RESOLVED** |
+| **`HIGH-05`** | HIGH | Pipe Lifecycle | Missing `nng_pipe_notify` event hooks | In NNG `<nng/nng.h:287-295>`, sockets require lifecycle hooks for `NNG_PIPE_EV_ADD_PRE`, `NNG_PIPE_EV_ADD_POST`, `NNG_PIPE_EV_REM_POST`. Specified in `understanding.md` §9.3 and `design.md` §10.4. | **RESOLVED** |
+| **`HIGH-06`** | HIGH | Protocol Multiplex | Context multiplexing and request ID collisions | Multiple concurrent `REQ0` / `SURVEYOR0` requests on a single socket collide without separate context state machines. Specified `Context` (`nng_ctx`) multiplexing in `understanding.md` §9.4 and `design.md` §10.5. | **RESOLVED** |
+| **`HIGH-07`** | HIGH | Repo Hygiene / Purity | Upstream C test suite pollution | Copying upstream NNG `*_test.c` files into the repository violates Pillar 5 (Carcass Purge). Specified ephemeral shallow-clone to `.cache/nng-upstream` with `nuts.h` C shim and `just test-nng-spec` in `understanding.md` §10 and `design.md` §10.7. | **RESOLVED** |
+| **`WARN-05`** | WARN | Protocol Invariant | Raw mode invariant for `device(s1, s2)` forwarding | In NNG `nng_device.c:28`, devices require raw mode sockets to prevent cooked state machine corruption. Specified pre-condition check returning `NNG_EINVAL` in `design.md` §10.6. | **RESOLVED** |
+| **`WARN-06`** | WARN | Platform Divergence | Browser WebSocket TLS handling vs native TLS config | Browsers forbid programmatic TLS certificate/key injection via JS WebSocket; TLS is managed by the browser engine. Clarified in `understanding.md` §8.1. | **RESOLVED** |
+
 **Total Open Defects:** **0**
 
 ---
 
 ## 4. Architectural Sign-Off
 
-The system architecture (`design.md`) and understanding document (`understanding.md`) have satisfied all Five Pillars of the Axiomantic standard with literal fidelity to NNG v1.12.4. All identified defects have been remediated with zero open items.
+The system architecture (`design.md`) and understanding document (`understanding.md`) have satisfied all Five Pillars of the Axiomantic standard with literal fidelity to NNG v1.12.4 across Season v0.1.0 and Season v0.2.0 Phase 3. All identified defects (`CRIT-01..08`, `HIGH-01..07`, `WARN-01..06`) have been remediated with zero open items.
 
 The Triad recommends immediate ratification of Key 3 Gate and transition to Sprint Implementation Planning.

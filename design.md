@@ -350,3 +350,311 @@ Based on empirical inspection of `/Users/eek/Development/polyform/copier.yml` an
 | **Binary Message Framing** | Text frames strictly prohibited; trigger close code 1003. | Checked in `ws_framing.nim` |
 | **Strict TTL / Hop Validation** | Frames with hop count > 255 or invalid format trigger immediate pipe termination. | Checked in `pair1.nim` and `reqrep0.nim` |
 | **Client-Side SUB0 Filtering** | Reject any outgoing data frame from SUB0 to PUB0 to prevent pipe teardown. | Enforced in `pubsub0.nim` state machine |
+
+---
+
+## 10. Season v0.2.0 Architecture & Specification Parity Details
+
+### 10.1 Full Target-Appropriate Transport Matrix & TLS Architecture (`tls+tcp://`, `wss://`)
+
+`anynng` extends its native transport matrix to support TLS over TCP (`tls+tcp://`, `tls+tcp4://`, `tls+tcp6://`) and WebSocket Secure (`wss://`, `wss4://`, `wss6://`), with complete `nng_tls_config` parity:
+
+```mermaid
+flowchart TD
+    subgraph Config["TLS Configuration Layer"]
+        TlsCfg["TlsConfig ref object\n• mode: TlsMode (Client | Server)\n• authMode: TlsAuthMode (None | Optional | Required)\n• caChain / caFile: Root Certificates\n• ownCert / certKeyFile: Certificate & Private Key\n• serverName: SNI Hostname"]
+    end
+
+    subgraph NativeTransports["Native (nim c) Transports"]
+        TlsTcpDialer["tls+tcp:// Dialer\n(Wraps TCP Stream in SslContext with SNI)"]
+        TlsTcpListener["tls+tcp:// Listener\n(Wraps TCP Server in SslContext)"]
+        WssDialer["wss:// Dialer\n(Native WebSocket over SslContext)"]
+        WssListener["wss:// Listener\n(Native WebSocket Server over SslContext)"]
+    end
+
+    subgraph BrowserTransports["Browser JS & WASM (nim js / nim wasm / ts)"]
+        BrowserWss["wss:// Browser WebSocket\n(Inherits Browser Native TLS Stack & CA Store)"]
+    end
+
+    TlsCfg --> TlsTcpDialer & TlsTcpListener & WssDialer & WssListener
+```
+
+#### 10.1.1 Concrete Nim TLS Types & Declarations (`src/anynng/core/tls.nim`)
+
+```nim
+type
+  TlsMode* = enum
+    tlsModeClient = 1,
+    tlsModeServer = 2
+
+  TlsAuthMode* = enum
+    tlsAuthModeNone = 0,
+    tlsAuthModeOptional = 1,
+    tlsAuthModeRequired = 2
+
+  TlsVersion* = enum
+    tlsVersion12 = 0x0303,
+    tlsVersion13 = 0x0304
+
+  TlsConfig* = ref object
+    mode*: TlsMode
+    authMode*: TlsAuthMode
+    minVersion*: TlsVersion
+    maxVersion*: TlsVersion
+    serverName*: string
+    caChainPem*: string
+    caFilePath*: string
+    ownCertPem*: string
+    ownKeyPem*: string
+    ownCertFilePath*: string
+    ownKeyFilePath*: string
+    keyPassphrase*: string
+
+proc newTlsConfig*(mode: TlsMode): TlsConfig =
+  result = TlsConfig(
+    mode: mode,
+    authMode: (if mode == tlsModeClient: tlsAuthModeRequired else: tlsAuthModeNone),
+    minVersion: tlsVersion12,
+    maxVersion: tlsVersion13
+  )
+
+proc setServerName*(cfg: TlsConfig, name: string) {.inline.} =
+  cfg.serverName = name
+
+proc setAuthMode*(cfg: TlsConfig, auth: TlsAuthMode) {.inline.} =
+  cfg.authMode = auth
+
+proc setCaChain*(cfg: TlsConfig, certPem: string, crlPem: string = "") {.inline.} =
+  cfg.caChainPem = certPem
+
+proc setCaFile*(cfg: TlsConfig, path: string) {.inline.} =
+  cfg.caFilePath = path
+
+proc setOwnCert*(cfg: TlsConfig, certPem, keyPem: string, pass: string = "") {.inline.} =
+  cfg.ownCertPem = certPem
+  cfg.ownKeyPem = keyPem
+  cfg.keyPassphrase = pass
+
+proc setCertKeyFile*(cfg: TlsConfig, certPath: string, keyPath: string = "") {.inline.} =
+  cfg.ownCertFilePath = certPath
+  cfg.ownKeyFilePath = (if keyPath.len > 0: keyPath else: certPath)
+```
+
+---
+
+### 10.2 Strongly-Typed Option Registry (`getopt` / `setopt`) & NNG Error Semantics
+
+Options in NNG have strict access control (read-only, write-only, read-write), strict types (`bool`, `int`, `nng_duration`, `size_t`, `string`, `nng_sockaddr`), and target-entity scoping (Socket, Dialer, Listener, Pipe, Context):
+
+```nim
+type
+  OptionKind* = enum
+    optKindBool,
+    optKindInt,
+    optKindDuration, # milliseconds (int64)
+    optKindSize,     # byte sizes (uint64)
+    optKindString,
+    optKindSockAddr,
+    optKindPtr
+
+  OptionAccess* = enum
+    optRo, # Read-Only (attempt to set returns NNG_EREADONLY = 24)
+    optWo, # Write-Only (attempt to get returns NNG_EWRITEONLY = 25)
+    optRw  # Read-Write
+
+  OptionEntity* = set[enum (entSocket, entDialer, entListener, entPipe, entContext)]
+
+  OptionDescriptor* = object
+    name*: string
+    kind*: OptionKind
+    access*: OptionAccess
+    allowedEntities*: OptionEntity
+
+# Exact NNG Error Code Constants
+const
+  NNG_OK*           = 0
+  NNG_EINTR*        = 1
+  NNG_ENOMEM*       = 2
+  NNG_EINVAL*       = 3
+  NNG_EBUSY*        = 4
+  NNG_ETIMEDOUT*    = 5
+  NNG_ECONNREFUSED* = 6
+  NNG_ECLOSED*      = 7
+  NNG_EAGAIN*       = 8
+  NNG_ENOTSUP*      = 9
+  NNG_EADDRINUSE*   = 10
+  NNG_ESTATE*       = 11
+  NNG_ENOENT*       = 12
+  NNG_EPROTO*       = 13
+  NNG_EUNREACHABLE* = 14
+  NNG_EADDRINVAL*   = 15
+  NNG_EPERM*        = 16
+  NNG_EMSGSIZE*     = 17
+  NNG_ECONNABORTED* = 18
+  NNG_ECONNRESET*   = 19
+  NNG_ECANCELED*    = 20
+  NNG_ENOFILES*     = 21
+  NNG_ENOSPC*       = 22
+  NNG_EEXIST*       = 23
+  NNG_EREADONLY*    = 24
+  NNG_EWRITEONLY*   = 25
+  NNG_ECRYPTO*      = 26
+  NNG_EPEERAUTH*    = 27
+  NNG_ENOARG*       = 28
+  NNG_EAMBIGUOUS*   = 29
+  NNG_EBADTYPE*     = 30
+  NNG_ECONNSHUT*    = 31
+  NNG_EINTERNAL*    = 1000
+```
+
+#### Option Dispatch Validation Pipeline:
+1. **Name Lookup**: If option name is not registered for the target entity $\to$ return `NNG_ENOTSUP` (`9`).
+2. **Access Check**:
+   - Setting a `optRo` option $\to$ return `NNG_EREADONLY` (`24`).
+   - Getting a `optWo` option $\to$ return `NNG_EWRITEONLY` (`25`).
+3. **Type Check**: If requested type does not match `OptionKind` $\to$ return `NNG_EBADTYPE` (`30`).
+4. **Range / Value Check**: If value violates bounds (e.g. `maxTtl < 1` or `> 255`) $\to$ return `NNG_EINVAL` (`3`).
+
+---
+
+### 10.3 First-Class `Dialer` & `Listener` Two-Step Lifecycle & Ephemeral Port Binding
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED : dialerCreate / listenerCreate
+    CREATED --> CONFIGURED : setOpt (reconnect-min, tls-config, etc.)
+    CONFIGURED --> ACTIVE : start() (Binds port or dials out)
+    ACTIVE --> RECONNECTING : Transport drop (Dialer auto-reconnect with jitter)
+    RECONNECTING --> ACTIVE : Successful reconnection
+    ACTIVE --> CLOSED : close()
+    RECONNECTING --> CLOSED : close()
+    CLOSED --> [*]
+```
+
+#### Ephemeral Port-0 Allocation Flow:
+1. Application calls `listenerCreate(sock, "tcp://127.0.0.1:0")`.
+2. Application calls `await listener.start()`.
+3. Transport invokes OS `bind()` and queries allocated port via `getsockname()`:
+   ```nim
+   var name: Sockaddr_in
+   var namelen = sizeof(name).SockLen
+   if getsockname(sock.getFd(), cast[ptr SockAddr](addr name), addr namelen) == 0:
+     l.boundPort = int(nativesockets.ntohs(name.sin_port))
+   ```
+4. Calling `listener.getInt(NNG_OPT_TCP_BOUND_PORT)` or `listener.getSockAddr(NNG_OPT_LOCADDR)` immediately returns the exact bound port (e.g. `52341`), allowing tests and multi-tenant services to run without port collisions!
+
+---
+
+### 10.4 First-Class `Pipe` Introspection & Event Hooks (`nng_pipe_notify`)
+
+```mermaid
+sequenceDiagram
+    participant Transport as Transport (TCP/WS/IPC)
+    participant Pipe as Pipe Instance
+    participant Hook as Registered Callback (nng_pipe_notify)
+    participant Engine as Protocol State Machine
+
+    Transport->>Pipe: Network Handshake Complete
+    Transport->>Hook: Fire NNG_PIPE_EV_ADD_PRE (pipe)
+    alt Hook Rejects Pipe (returns error)
+        Transport->>Pipe: Close Connection
+    else Hook Accepts Pipe
+        Transport->>Engine: Add Pipe to Active Set
+        Transport->>Hook: Fire NNG_PIPE_EV_ADD_POST (pipe)
+        Transport->>Engine: Exchange Messages (pipe.id stamped on SpMsg)
+        Transport->>Pipe: Connection Closed / Severed
+        Transport->>Engine: Remove Pipe from Active Set
+        Transport->>Hook: Fire NNG_PIPE_EV_REM_POST (pipe)
+    end
+```
+
+---
+
+### 10.5 Concurrent `Context` (`nng_ctx`) Multiplexing & Async I/O (`nng_aio`)
+
+A single `Socket` can host arbitrary concurrent `Context` instances:
+
+```mermaid
+flowchart TD
+    Socket["Socket (proto = spReq0)\nOwns 1..N Pipes to REP0 Server"]
+    Ctx1["Context 1 (ctxId = 1)\nPending reqId = 0x80000001\nPrivate recv-timeout = 2000ms"]
+    Ctx2["Context 2 (ctxId = 2)\nPending reqId = 0x80000002\nPrivate recv-timeout = 500ms"]
+    Ctx3["Context 3 (ctxId = 3)\nPending reqId = 0x80000003\nPrivate recv-timeout = 10000ms"]
+
+    Ctx1 --> Socket
+    Ctx2 --> Socket
+    Ctx3 --> Socket
+
+    Socket --> Pipe1["Pipe 1 (tcp://127.0.0.1:5555)"]
+    Socket --> Pipe2["Pipe 2 (tcp://127.0.0.1:5556)"]
+```
+
+When reply `0x80000002` arrives on `Pipe 1`:
+1. `req0.nim` inspects 32-bit request ID `0x80000002`.
+2. Matches `0x80000002` to `Context 2`'s pending map.
+3. Resolves `Context 2`'s `recv()` `Future` without waking or affecting `Context 1` or `Context 3`!
+
+---
+
+### 10.6 Raw Mode Sockets & Device Forwarding (`nng_device`)
+
+`device(s1, s2)` bridges two scalability protocol networks:
+
+```nim
+proc device*(s1, s2: Socket): Future[void] {.async.} =
+  ## Connects two raw sockets together in a full-duplex forwarding loop.
+  ## Fails with NNG_EINVAL if either socket is not in raw mode.
+  if not s1.raw or not s2.raw:
+    raise newSpError(spErrInval, "device requires raw mode sockets")
+
+  var forward1to2 = async proc() =
+    while not s1.closed and not s2.closed:
+      let msg = await s1.recvMsg()
+      await s2.sendMsg(msg)
+
+  var forward2to1 = async proc() =
+    while not s1.closed and not s2.closed:
+      let msg = await s2.recvMsg()
+      await s1.sendMsg(msg)
+
+  # Run both directions concurrently until either socket closes
+  await forward1to2() or forward2to1()
+```
+
+---
+
+### 10.7 Upstream `nanomsg/nng` v1.12.4 C ABI & Specification Test Harness
+
+```mermaid
+flowchart TD
+    subgraph Repo["Git Repository (Canonical Purity)"]
+        CApi["src/anynng/c_api.nim\n{.exportc, cdecl.} C ABI"]
+        NutsH["tests/upstream_shim/nuts.h\nNUTS Macro Harness"]
+        Runner["scripts/run_upstream_nng_tests.sh\nTest Runner Driver"]
+        Just["just test-nng-spec"]
+    end
+
+    subgraph Cache[".cache/ (Git-Ignored Ephemeral Storage)"]
+        ShallowClone["git clone --depth 1 -b v1.12.4\nhttps://github.com/nanomsg/nng .cache/nng-upstream"]
+        UpstreamHeaders[".cache/nng-upstream/include/"]
+        UpstreamTests[".cache/nng-upstream/tests/*.c\n(reqrep.c, pubsub.c, pipeline.c, etc.)"]
+    end
+
+    Just --> Runner
+    Runner --> ShallowClone
+    Runner --> BuildLib["Compile c_api.nim -> libanynng_c.a"]
+    BuildLib --> CompileTest["clang test.c -Iinclude -Itests/upstream_shim libanynng_c.a"]
+    CompileTest --> RunTest["Execute upstream test binary"]
+```
+
+#### NUTS Assertions Shim (`tests/upstream_shim/nuts.h`):
+Implements the exact macro suite expected by upstream NNG test files:
+- `NUTS_ASSERT(cond)`
+- `NUTS_PASS(expr)` (asserts return code is `0`)
+- `NUTS_FAIL(expr, err)` (asserts return code is `err`)
+- `NUTS_TRUE(expr)`
+- `NUTS_NULL(expr)` / `NUTS_NONULL(expr)`
+- `NUTS_CASE(name)`
+- `NUTS_SLEEP(ms)`
+- Address generator: `nuts_server_addr(proto, port)` and `nuts_client_addr(proto, port)`
+- `NUTS_TESTS` entrypoint macro declaring `int main(int argc, char **argv)`.
