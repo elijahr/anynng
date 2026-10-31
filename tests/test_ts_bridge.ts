@@ -15,8 +15,9 @@ import {
   Surveyor0Socket,
   Respondent0Socket,
   Bus0Socket,
+  PipeEvent,
 } from "../ts/index.js";
-import { createSpWsServer } from "./helpers/mock_ws_server.mjs";
+import { createSpWsServer, createSpWssServer } from "./helpers/mock_ws_server.mjs";
 
 describe("anynng TypeScript / WASM Bridge Core", () => {
   let bridge: AnynngBridge;
@@ -253,5 +254,225 @@ describe("anynng TypeScript WebSocket SP Sockets (E2E)", () => {
     const reply = await bus.recv();
     expect(new TextDecoder().decode(reply)).toBe("bus-node-alive");
     bus.close();
+  });
+});
+
+describe("anynng Browser/Node Parity Features (Wave 3 Task 3.2)", () => {
+  it("performs secure TLS loopback over wss:// with Pair0Socket", async () => {
+    const origReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+    let wssHelper: any;
+    try {
+      wssHelper = await createSpWssServer(0);
+      const sock = new Pair0Socket(wssHelper.url);
+      await sock.connect();
+      const payload = new TextEncoder().encode("secret-wss-message");
+      await sock.send(payload);
+      const reply = await sock.recv();
+      expect(new TextDecoder().decode(reply)).toBe("secret-wss-message");
+      sock.close();
+    } finally {
+      if (wssHelper) await wssHelper.close();
+      if (origReject !== undefined) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = origReject;
+      } else {
+        delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      }
+    }
+  });
+
+  it("triggers pipeNotify events on connection lifecycle and supports ADD_PRE rejection", async () => {
+    const server = await createSpWsServer(0);
+    try {
+      // Test 1: Successful connection with hooks
+      const events: { pipeId: number; ev: PipeEvent }[] = [];
+      const sock1 = new Pair0Socket(server.url);
+      sock1.pipeNotify((pipeId, ev) => {
+        events.push({ pipeId, ev });
+        return true;
+      });
+      await sock1.connect();
+      expect(events.length).toBe(2);
+      expect(events[0].ev).toBe("add_pre");
+      expect(events[1].ev).toBe("add_post");
+
+      sock1.close();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(events.some((e) => e.ev === "rem_post")).toBe(true);
+
+      // Test 2: ADD_PRE rejection drops pipe
+      const rejectEvents: { pipeId: number; ev: PipeEvent }[] = [];
+      const sock2 = new Pair0Socket(server.url);
+      sock2.pipeNotify((pipeId, ev) => {
+        rejectEvents.push({ pipeId, ev });
+        if (ev === "add_pre") {
+          return false; // Reject pipe!
+        }
+      });
+      await expect(sock2.connect()).rejects.toThrow(
+        "Connection rejected by pipeNotify ADD_PRE",
+      );
+      expect(rejectEvents.some((e) => e.ev === "add_pre")).toBe(true);
+      expect(rejectEvents.some((e) => e.ev === "rem_post")).toBe(true);
+      expect(rejectEvents.some((e) => e.ev === "add_post")).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("multiplexes multiple concurrent contexts on a single Req0Socket", async () => {
+    const server = await createSpWsServer(0);
+    try {
+      const sock = new Req0Socket(server.url);
+      await sock.connect();
+
+      const ctx1 = sock.openContext();
+      const ctx2 = sock.openContext();
+      const ctx3 = sock.openContext();
+
+      expect(ctx1.id).not.toBe(ctx2.id);
+      expect(ctx2.id).not.toBe(ctx3.id);
+
+      // Send concurrent requests
+      const p1 = (async () => {
+        await ctx1.send(new TextEncoder().encode("req-ctx-1"));
+        const res = await ctx1.recv();
+        return new TextDecoder().decode(res);
+      })();
+
+      const p2 = (async () => {
+        await ctx2.send(new TextEncoder().encode("req-ctx-2"));
+        const res = await ctx2.recv();
+        return new TextDecoder().decode(res);
+      })();
+
+      const p3 = (async () => {
+        await ctx3.send(new TextEncoder().encode("req-ctx-3"));
+        const res = await ctx3.recv();
+        return new TextDecoder().decode(res);
+      })();
+
+      const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+      expect(r1).toBe("rep:req-ctx-1");
+      expect(r2).toBe("rep:req-ctx-2");
+      expect(r3).toBe("rep:req-ctx-3");
+
+      ctx1.close();
+      ctx2.close();
+      ctx3.close();
+      expect(ctx1.isClosed).toBe(true);
+      await expect(
+        ctx1.send(new TextEncoder().encode("fail")),
+      ).rejects.toThrow("Context is closed");
+
+      sock.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("automatically retransmits unreplied request when resendTimeMs is configured", async () => {
+    let receivedCount = 0;
+    const server = await createSpWsServer(
+      0,
+      (socket, payload, _subproto, helper) => {
+        receivedCount++;
+        if (receivedCount === 1) {
+          // Drop first request silently (simulate network packet drop)
+          return;
+        }
+        // On second request (resend), reply!
+        const reqId = payload.subarray(0, 4);
+        const body = payload.subarray(4);
+        const reply = Buffer.concat([reqId, Buffer.from("rep:"), body]);
+        helper.sendBinary(socket, reply);
+      },
+    );
+
+    try {
+      const sock = new Req0Socket(server.url, { resendTimeMs: 150 });
+      await sock.connect();
+
+      await sock.send(new TextEncoder().encode("needs-resend"));
+      const reply = await sock.recv();
+      expect(new TextDecoder().decode(reply)).toBe("rep:needs-resend");
+      expect(receivedCount).toBeGreaterThanOrEqual(2);
+
+      sock.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("enforces survey deadline timer (surveyTimeMs)", async () => {
+    const server = await createSpWsServer(
+      0,
+      (socket, payload, _subproto, helper) => {
+        // Delay response past deadline
+        setTimeout(() => {
+          const surveyId = payload.subarray(0, 4);
+          const body = payload.subarray(4);
+          const resp = Buffer.concat([surveyId, Buffer.from("resp:"), body]);
+          helper.sendBinary(socket, resp);
+        }, 300);
+      },
+    );
+
+    try {
+      const sock = new Surveyor0Socket(server.url, { surveyTimeMs: 100 });
+      await sock.connect();
+
+      await sock.send(new TextEncoder().encode("short-lived-survey"));
+      await expect(sock.recv()).rejects.toThrow();
+
+      sock.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("correctly sets and retrieves socket options (maxTtl, polyamorous, recvMaxSize, raw)", async () => {
+    const sock = new Pair1Socket("ws://127.0.0.1:9999", {
+      maxTtl: 12,
+      polyamorous: true,
+      recvMaxSize: 65536,
+      raw: false,
+    });
+
+    expect(sock.getOpt("maxTtl")).toBe(12);
+    expect(sock.getOpt("polyamorous")).toBe(true);
+    expect(sock.getOpt("recvMaxSize")).toBe(65536);
+    expect(sock.getOpt("raw")).toBe(false);
+
+    sock.setOpt("maxTtl", 4);
+    expect(sock.getOpt("maxTtl")).toBe(4);
+
+    sock.setOpt("polyamorous", false);
+    expect(sock.getOpt("polyamorous")).toBe(false);
+
+    sock.setOpt("raw", true);
+    expect(sock.getOpt("raw")).toBe(true);
+  });
+
+  it("connects and communicates using two-step Dialer lifecycle", async () => {
+    const server = await createSpWsServer(0);
+    try {
+      const sock = new Pair0Socket(server.url);
+      const dialer = sock.newDialer(server.url, {
+        reconnectTimeMinMs: 50,
+        reconnectTimeMaxMs: 500,
+        autoReconnect: true,
+      });
+
+      await dialer.start();
+
+      await sock.send(new TextEncoder().encode("dialer-test"));
+      const reply = await sock.recv();
+      expect(new TextDecoder().decode(reply)).toBe("dialer-test");
+
+      dialer.close();
+    } finally {
+      await server.close();
+    }
   });
 });

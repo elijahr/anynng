@@ -28,6 +28,9 @@ export interface WasmModuleExports {
   anynng_stream_decode_frame_len: (headerPtr: number, outLen: number) => number;
   anynng_udp_encode_header: (packetType: number, hops: number, flowId: number, seqNum: number, outPtr: number) => number;
   anynng_udp_decode_header: (headerPtr: number, outType: number, outHops: number, outFlow: number, outSeq: number) => number;
+  anynng_ctx_create?: () => number;
+  anynng_ctx_close?: (ctxId: number) => number;
+  anynng_pipe_event_name?: (ev: number, outBuf: number, outCap: number) => number;
   [key: string]: unknown;
 }
 
@@ -63,12 +66,33 @@ export const SP_PROTO_IDS: Record<SpProtoName, number> = {
   bus0: 0x70,
 };
 
+export type PipeEvent = "add_pre" | "add_post" | "rem_post";
+
+export type PipeNotifyHook = (pipeId: number, ev: PipeEvent) => boolean | void;
+
+export interface ContextOptions {
+  recvTimeoutMs?: number;
+  resendTimeMs?: number;
+}
+
+export interface DialerOptions {
+  reconnectTimeMinMs?: number;
+  reconnectTimeMaxMs?: number;
+  autoReconnect?: boolean;
+}
+
 export interface SocketOptions {
   recvTimeoutMs?: number;
   sendTimeoutMs?: number;
   maxTtl?: number;
+  polyamorous?: boolean;
+  recvMaxSize?: number;
+  raw?: boolean;
   resendTimeMs?: number;
   surveyTimeMs?: number;
+  reconnectTimeMinMs?: number;
+  reconnectTimeMaxMs?: number;
+  autoReconnect?: boolean;
 }
 
 export interface AnynngInstance {

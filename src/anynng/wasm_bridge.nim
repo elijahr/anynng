@@ -6,7 +6,6 @@
 import ./core/types
 import ./core/framing/ws_framing
 import ./core/framing/stream_framing
-import ./core/framing/udp_framing
 
 template pArr(p: pointer or ptr byte): ptr UncheckedArray[byte] =
   cast[ptr UncheckedArray[byte]](p)
@@ -359,5 +358,33 @@ proc anynng_udp_decode_header*(
   if outSeq != nil:
     outSeq[] = readBe32(headerPtr, 4)
   return 0
+
+# ----------------------------------------------------------------------
+# Option & Context & Pipe Notification Support
+# ----------------------------------------------------------------------
+
+var gWasmNextCtxId: int32 = 2'i32
+
+proc anynng_ctx_create*(): int32 =
+  ## Allocates a sequential Context ID for context multiplexing.
+  result = gWasmNextCtxId
+  inc gWasmNextCtxId
+
+proc anynng_ctx_close*(ctxId: int32): int32 =
+  ## Closes a Context ID.
+  0'i32
+
+proc anynng_pipe_event_name*(ev: int32, outBuf: cstring, outCap: int32): int32 =
+  ## Returns pipe event name string ("add_pre", "add_post", "rem_post").
+  var name: string
+  case ev
+  of 1: name = "add_pre"
+  of 2: name = "add_post"
+  of 3: name = "rem_post"
+  else: name = "unknown"
+  if outBuf != nil and outCap > name.len:
+    copyMem(outBuf, cstring(name), name.len + 1)
+    return int32(name.len)
+  return int32(name.len)
 
 {.pop.}
