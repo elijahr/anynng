@@ -20,3 +20,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Canonical WASM ProtocolEngine state machine export, de-duplication of TypeScript protocol state machines, template carcass purge, and Deque O(1) queue refactor (Task 5.1).
 - feat(nuts): 100% pass across all 12 upstream nanomsg/nng v1.12.4 NUTS protocol specification test suites (pair0, pair1, pair1_poly, req, rep, pub, sub, push, pull, survey, respond, bus)
 - feat: upgrade C-ABI and protocol engines to nanomsg/nng v2.1.0 compatibility with 18/18 upstream NUTS protocol test suites passing and per-suite execution timeout
+- refactor: decompose monolithic src/anynng.nim and src/anynng/c_api.nim into single-responsibility domain submodules
