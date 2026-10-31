@@ -25,8 +25,8 @@ when not defined(js):
         if chunk.len == 0:
           break # EOF
         var chunkBytes = newSeq[byte](chunk.len)
-        for i in 0 ..< chunk.len:
-          chunkBytes[i] = byte(chunk[i])
+        if chunk.len > 0:
+          copyMem(addr chunkBytes[0], unsafeAddr chunk[0], chunk.len)
         decoder.feed(
           chunkBytes,
           proc(frame: seq[byte]) =
@@ -95,8 +95,8 @@ when not defined(js):
       if not sock.isClosed:
         let encoded = encodeStreamFrame(data, hasTypeByte = true)
         var sOut = newString(encoded.len)
-        for i in 0 ..< encoded.len:
-          sOut[i] = char(encoded[i])
+        if encoded.len > 0:
+          copyMem(addr sOut[0], unsafeAddr encoded[0], encoded.len)
         asyncCheck sock.send(sOut)
 
     let closeCb = proc() =
@@ -178,8 +178,8 @@ when not defined(js):
             if not clientSock.isClosed:
               let encoded = encodeStreamFrame(data, hasTypeByte = true)
               var sOut = newString(encoded.len)
-              for i in 0 ..< encoded.len:
-                sOut[i] = char(encoded[i])
+              if encoded.len > 0:
+                copyMem(addr sOut[0], unsafeAddr encoded[0], encoded.len)
               asyncCheck clientSock.send(sOut)
 
           let closeCb = proc() =

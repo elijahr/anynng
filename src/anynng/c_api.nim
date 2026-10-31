@@ -3,7 +3,7 @@
 # Licensed under MIT License.
 
 when not defined(js):
-  import std/[tables, sets, times, monotimes, os, random, strutils, asyncdispatch]
+  import std/[tables, sets, monotimes, os, random, asyncdispatch, posix, deques]
   import ../anynng
   import ./core/[types, options, tls]
   import ./core/protocols/pubsub0
@@ -47,16 +47,33 @@ when not defined(js):
       cb: NngPipeNotifyCbCdecl
       arg: pointer
 
-    NngMtxObj = object # Simple pthread mutex or lock
-      dummy: int
+    NngMtxObj* = object
+      m*: ptr Pthread_mutex
 
-    NngCvObj = object
-      dummy: int
+    NngCvObj* = object
+      c*: ptr Pthread_cond
+      mtx*: ptr Pthread_mutex
 
     NngThreadObj = object
       fn: proc(arg: pointer) {.cdecl.}
       arg: pointer
       thr: Thread[pointer]
+
+  var gHandleMtx: ptr Pthread_mutex = nil
+
+  proc getHandleMtx(): ptr Pthread_mutex =
+    if gHandleMtx == nil:
+      gHandleMtx = cast[ptr Pthread_mutex](allocShared0(128))
+      discard pthread_mutex_init(gHandleMtx, nil)
+    gHandleMtx
+
+  template withHandleLock(body: untyped) =
+    let hm = getHandleMtx()
+    discard pthread_mutex_lock(hm)
+    try:
+      body
+    finally:
+      discard pthread_mutex_unlock(hm)
 
   var
     gNextSockId: uint32 = 1
@@ -72,7 +89,6 @@ when not defined(js):
     gContexts = initTable[uint32, Context]()
     gClosedCtxs = initHashSet[uint32]()
 
-    gNextPipeId: uint32 = 1
     gPipes = initTable[uint32, Pipe]()
 
     gTlsConfigs = initTable[uint32, TlsConfig]()
@@ -1006,15 +1022,14 @@ when not defined(js):
     # If context recvQueue is empty but socket has messages for Rep/Respondent, claim one
     if ctx.recvQueue.len == 0 and ctx.socket.recvQueue.len > 0 and
         ctx.socket.engineKind in {engRep0, engRespondent0}:
-      let msg = ctx.socket.recvQueue[0]
-      ctx.socket.recvQueue.delete(0)
+      let msg = ctx.socket.recvQueue.popFirst()
       if ctx.socket.engineKind == engRespondent0 and
           ctx.socket.respondent0Eng.reqStack.len > 0:
         ctx.socket.respondent0Eng.contexts[ctx.ctxId] =
           ctx.socket.respondent0Eng.reqStack.pop()
       elif ctx.socket.engineKind == engRep0 and ctx.socket.rep0Eng.reqStack.len > 0:
         ctx.socket.rep0Eng.contexts[ctx.ctxId] = ctx.socket.rep0Eng.reqStack.pop()
-      ctx.recvQueue.add(msg)
+      ctx.recvQueue.addLast(msg)
 
     let start = getMonoTime().ticks div 1_000_000
     if ctx.socket.engineKind == engSurveyor0 and not ctx.socket.raw:
@@ -1045,15 +1060,14 @@ when not defined(js):
         sleep(5)
       if ctx.recvQueue.len == 0 and ctx.socket.recvQueue.len > 0 and
           ctx.socket.engineKind in {engRep0, engRespondent0}:
-        let msg = ctx.socket.recvQueue[0]
-        ctx.socket.recvQueue.delete(0)
+        let msg = ctx.socket.recvQueue.popFirst()
         if ctx.socket.engineKind == engRespondent0 and
             ctx.socket.respondent0Eng.reqStack.len > 0:
           ctx.socket.respondent0Eng.contexts[ctx.ctxId] =
             ctx.socket.respondent0Eng.reqStack.pop()
         elif ctx.socket.engineKind == engRep0 and ctx.socket.rep0Eng.reqStack.len > 0:
           ctx.socket.rep0Eng.contexts[ctx.ctxId] = ctx.socket.rep0Eng.reqStack.pop()
-        ctx.recvQueue.add(msg)
+        ctx.recvQueue.addLast(msg)
 
     if ctx.recvQueue.len == 0:
       return cint(NNG_ETIMEDOUT)
@@ -1563,15 +1577,14 @@ when not defined(js):
       return
     if ctx.recvQueue.len == 0 and ctx.socket.recvQueue.len > 0 and
         ctx.socket.engineKind in {engRep0, engRespondent0}:
-      let msg = ctx.socket.recvQueue[0]
-      ctx.socket.recvQueue.delete(0)
+      let msg = ctx.socket.recvQueue.popFirst()
       if ctx.socket.engineKind == engRespondent0 and
           ctx.socket.respondent0Eng.reqStack.len > 0:
         ctx.socket.respondent0Eng.contexts[ctx.ctxId] =
           ctx.socket.respondent0Eng.reqStack.pop()
       elif ctx.socket.engineKind == engRep0 and ctx.socket.rep0Eng.reqStack.len > 0:
         ctx.socket.rep0Eng.contexts[ctx.ctxId] = ctx.socket.rep0Eng.reqStack.pop()
-      ctx.recvQueue.add(msg)
+      ctx.recvQueue.addLast(msg)
     if ctx.recvQueue.len > 0:
       var msg: ptr NngMsgObj = nil
       let res = nng_ctx_recvmsg(c, addr msg, 2)
@@ -2203,8 +2216,7 @@ when not defined(js):
       src.deviceHook = proc(msg: SpMsg) =
         src.sendMsg(msg)
       while src.recvQueue.len > 0:
-        let m = src.recvQueue[0]
-        src.recvQueue.delete(0)
+        let m = src.recvQueue.popFirst()
         src.sendMsg(m)
     else:
       src.deviceHook = proc(msg: SpMsg) =
@@ -2212,12 +2224,10 @@ when not defined(js):
       dst.deviceHook = proc(msg: SpMsg) =
         src.sendMsg(msg)
       while src.recvQueue.len > 0:
-        let m = src.recvQueue[0]
-        src.recvQueue.delete(0)
+        let m = src.recvQueue.popFirst()
         dst.sendMsg(m)
       while dst.recvQueue.len > 0:
-        let m = dst.recvQueue[0]
-        dst.recvQueue.delete(0)
+        let m = dst.recvQueue.popFirst()
         src.sendMsg(m)
 
   proc nng_device*(
@@ -2349,45 +2359,81 @@ when not defined(js):
   proc nng_mtx_alloc*(mtxp: ptr pointer): cint {.exportc, dynlib, cdecl.} =
     if mtxp == nil:
       return cint(NNG_EINVAL)
-    mtxp[] = cast[pointer](1)
+    let m = cast[ptr Pthread_mutex](allocShared0(128))
+    if pthread_mutex_init(m, nil) != 0:
+      deallocShared(m)
+      return cint(NNG_ENOMEM)
+    mtxp[] = cast[pointer](m)
     return 0
 
   proc nng_mtx_free*(mtx: pointer) {.exportc, dynlib, cdecl.} =
-    discard
+    if mtx != nil:
+      let m = cast[ptr Pthread_mutex](mtx)
+      discard pthread_mutex_destroy(m)
+      deallocShared(m)
 
   proc nng_mtx_lock*(mtx: pointer) {.exportc, dynlib, cdecl.} =
-    discard
+    if mtx != nil:
+      discard pthread_mutex_lock(cast[ptr Pthread_mutex](mtx))
 
   proc nng_mtx_unlock*(mtx: pointer) {.exportc, dynlib, cdecl.} =
-    discard
+    if mtx != nil:
+      discard pthread_mutex_unlock(cast[ptr Pthread_mutex](mtx))
 
   proc nng_cv_alloc*(cvp: ptr pointer, mtx: pointer): cint {.exportc, dynlib, cdecl.} =
-    if cvp == nil:
+    if cvp == nil or mtx == nil:
       return cint(NNG_EINVAL)
-    cvp[] = cast[pointer](1)
+    let cv = createShared(NngCvObj)
+    cv.c = cast[ptr Pthread_cond](allocShared0(128))
+    if pthread_cond_init(cv.c, nil) != 0:
+      deallocShared(cv.c)
+      freeShared(cv)
+      return cint(NNG_ENOMEM)
+    cv.mtx = cast[ptr Pthread_mutex](mtx)
+    cvp[] = cast[pointer](cv)
     return 0
 
   proc nng_cv_free*(cv: pointer) {.exportc, dynlib, cdecl.} =
-    discard
+    if cv != nil:
+      let c = cast[ptr NngCvObj](cv)
+      if c.c != nil:
+        discard pthread_cond_destroy(c.c)
+        deallocShared(c.c)
+      freeShared(c)
 
   proc nng_cv_wait*(cv: pointer) {.exportc, dynlib, cdecl.} =
-    sleep(10)
+    if cv != nil:
+      let c = cast[ptr NngCvObj](cv)
+      if c.c != nil and c.mtx != nil:
+        discard pthread_cond_wait(c.c, c.mtx)
 
   proc nng_cv_until*(cv: pointer, whenMs: uint64): cint {.exportc, dynlib, cdecl.} =
-    let now = nng_clock()
-    if now >= whenMs:
+    if cv == nil:
+      return cint(NNG_EINVAL)
+    let c = cast[ptr NngCvObj](cv)
+    if c.c == nil or c.mtx == nil:
+      return cint(NNG_EINVAL)
+    var ts: Timespec
+    ts.tv_sec = posix.Time(whenMs div 1000'u64)
+    ts.tv_nsec = clong((whenMs mod 1000'u64) * 1_000_000'u64)
+    let rc = pthread_cond_timedwait(c.c, c.mtx, addr ts)
+    if rc == ETIMEDOUT:
       return cint(NNG_ETIMEDOUT)
-    let diff = min(int(whenMs - now), 50)
-    sleep(diff)
-    if nng_clock() >= whenMs:
-      return cint(NNG_ETIMEDOUT)
+    elif rc != 0:
+      return cint(NNG_EINVAL)
     return 0
 
   proc nng_cv_wake*(cv: pointer) {.exportc, dynlib, cdecl.} =
-    discard
+    if cv != nil:
+      let c = cast[ptr NngCvObj](cv)
+      if c.c != nil:
+        discard pthread_cond_broadcast(c.c)
 
   proc nng_cv_wake1*(cv: pointer) {.exportc, dynlib, cdecl.} =
-    discard
+    if cv != nil:
+      let c = cast[ptr NngCvObj](cv)
+      if c.c != nil:
+        discard pthread_cond_signal(c.c)
 
   proc threadEntry(arg: pointer) {.thread.} =
     {.cast(gcsafe).}:

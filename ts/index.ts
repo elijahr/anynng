@@ -686,19 +686,22 @@ export class Req0Socket extends BaseSocket {
     await super.connect(bridge);
     const resendMs = (this.getOpt("resendTime") as number) ?? 0;
     if (resendMs > 0 && !this.resendTimer) {
-      this.resendTimer = setInterval(() => {
-        if (!this.isClosed && this.bridge && this.engineHandle !== 0) {
-          const acts = this.bridge.engineStep(
-            this.engineHandle,
-            EngineEventKind.evTimerTick,
-            0,
-            0,
-            new Uint8Array(0),
-            Date.now(),
-          );
-          this.dispatchActions(acts);
-        }
-      }, Math.max(10, Math.floor(resendMs / 2)));
+      this.resendTimer = setInterval(
+        () => {
+          if (!this.isClosed && this.bridge && this.engineHandle !== 0) {
+            const acts = this.bridge.engineStep(
+              this.engineHandle,
+              EngineEventKind.evTimerTick,
+              0,
+              0,
+              new Uint8Array(0),
+              Date.now(),
+            );
+            this.dispatchActions(acts);
+          }
+        },
+        Math.max(10, Math.floor(resendMs / 2)),
+      );
     }
   }
 

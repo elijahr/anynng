@@ -1,7 +1,7 @@
 # anynng - Pure-Nim multi-target (C, JS, WASM) and multi-transport NNG / Scalability Protocols
 # Licensed under MIT License.
 
-import std/tables
+import std/[tables, deques]
 import anynng/core/[types, options, tls, endian, url]
 import anynng/core/framing/[stream_framing, ws_framing, udp_framing]
 import anynng/core/protocols/[pair0, pair1, pubsub0, reqrep0, pipeline0, survey0, bus0]
@@ -55,8 +55,8 @@ type
     respondent0Eng*: Respondent0Engine
     bus0Eng*: Bus0Engine
     pipes*: Table[PipeId, Pipe]
-    recvQueue*: seq[SpMsg]
-    sendQueue*: seq[SpMsg]
+    recvQueue*: Deque[SpMsg]
+    sendQueue*: Deque[SpMsg]
     inFlight*: int
     lastErr*: cint
     onRecvCb*: proc(msg: SpMsg) {.closure.}
@@ -98,7 +98,7 @@ type
     options*: OptionStore
     closed*: bool
     lastErr*: cint
-    recvQueue*: seq[SpMsg]
+    recvQueue*: Deque[SpMsg]
     onRecvCb*: proc(msg: SpMsg) {.closure.}
     pendingRecvCb*: proc(res: int, msg: SpMsg) {.closure.}
     sub0Topics*: seq[seq[byte]]
@@ -110,12 +110,7 @@ func matchesTopicList*(topics: seq[seq[byte]], frame: openArray[byte]): bool =
     if sub.len == 0:
       return true
     if frame.len >= sub.len:
-      var matches = true
-      for i in 0 ..< sub.len:
-        if frame[i] != sub[i]:
-          matches = false
-          break
-      if matches:
+      if equalMem(unsafeAddr frame[0], unsafeAddr sub[0], sub.len):
         return true
   return false
 
@@ -143,8 +138,8 @@ proc newSocket*(proto: SpProto, raw: bool = false): Socket =
   result.proto = proto
   result.raw = raw
   result.closed = false
-  result.recvQueue = @[]
-  result.sendQueue = @[]
+  result.recvQueue = initDeque[SpMsg]()
+  result.sendQueue = initDeque[SpMsg]()
   result.inFlight = 0
   result.pipes = initTable[PipeId, Pipe]()
   result.options = newOptionStore(entSocket)
@@ -326,7 +321,7 @@ proc executeActions*(s: Socket, actions: seq[EngineAction]) =
           else:
             let maxBuf = ctx.options.getInt(NNG_OPT_RECVBUF)
             if maxBuf == 0 or ctx.recvQueue.len < maxBuf:
-              ctx.recvQueue.add(msg)
+              ctx.recvQueue.addLast(msg)
               delivered = true
       elif s.engineKind == engSub0:
         # Fan out to all contexts whose topics match
@@ -343,10 +338,10 @@ proc executeActions*(s: Socket, actions: seq[EngineAction]) =
             else:
               let maxBuf = ctx.options.getInt(NNG_OPT_RECVBUF)
               if maxBuf == 0 or ctx.recvQueue.len < maxBuf:
-                ctx.recvQueue.add(msg)
+                ctx.recvQueue.addLast(msg)
               elif ctx.options.getBool(NNG_OPT_SUB_PREFNEW):
-                ctx.recvQueue.delete(0)
-                ctx.recvQueue.add(msg)
+                discard ctx.recvQueue.popFirst()
+                ctx.recvQueue.addLast(msg)
         if gOnPipeHook != nil:
           gOnPipeHook()
       elif s.engineKind in {engRep0, engRespondent0} and s.contexts.len > 0:
@@ -386,10 +381,10 @@ proc executeActions*(s: Socket, actions: seq[EngineAction]) =
           else:
             let maxBuf = s.options.getInt(NNG_OPT_RECVBUF)
             if maxBuf == 0 or s.recvQueue.len < maxBuf:
-              s.recvQueue.add(msg)
+              s.recvQueue.addLast(msg)
             elif s.engineKind == engSub0 and s.options.getBool(NNG_OPT_SUB_PREFNEW):
-              s.recvQueue.delete(0)
-              s.recvQueue.add(msg)
+              discard s.recvQueue.popFirst()
+              s.recvQueue.addLast(msg)
       s.updateRecvFd()
       s.updateSendFd()
     of actFinishSend:
@@ -479,8 +474,7 @@ proc attachCustomPipe*(s: Socket, pipe: Pipe) =
 
   # Flush send queue if any
   while s.sendQueue.len > 0 and s.pipes.len > 0:
-    let msg = s.sendQueue[0]
-    s.sendQueue.delete(0)
+    let msg = s.sendQueue.popFirst()
     let evSend =
       EngineEvent(kind: evUserSend, ctxId: 0, msg: msg, nowMs: currentNowMs())
     let sendActions = s.stepEngine(evSend)
@@ -594,9 +588,10 @@ proc setOpt*(s: Socket, name: string, val: int) =
   s.options.setInt(name, val)
   if name == NNG_OPT_SENDBUF:
     if val == 0:
-      s.sendQueue.setLen(0)
-    elif s.sendQueue.len > val:
-      s.sendQueue.setLen(val)
+      s.sendQueue.clear()
+    else:
+      while s.sendQueue.len > val:
+        discard s.sendQueue.popLast()
     s.updateSendFd()
   elif name == NNG_OPT_MAXTTL:
     if s.engineKind == engRep0:
@@ -611,10 +606,11 @@ proc setOpt*(s: Socket, name: string, val: int) =
     s.surveyor0Eng.surveyTimeMs = int64(val)
   elif name == NNG_OPT_RECVBUF:
     if val == 0:
-      s.recvQueue.setLen(0)
+      s.recvQueue.clear()
       s.updateRecvFd()
-    elif s.recvQueue.len > val:
-      s.recvQueue.setLen(val)
+    else:
+      while s.recvQueue.len > val:
+        discard s.recvQueue.popLast()
       s.updateRecvFd()
 
 proc setOpt*(s: Socket, name: string, val: int64) =
@@ -632,15 +628,15 @@ proc setOpt*(s: Socket, name: string, val: string) =
     s.options.validateAccess(name, isSet = true, optKindString)
     if s.engineKind == engSub0:
       var b = newSeq[byte](val.len)
-      for i in 0 ..< val.len:
-        b[i] = byte(val[i])
+      if val.len > 0:
+        copyMem(addr b[0], unsafeAddr val[0], val.len)
       s.sub0Eng.subscribe(b)
   elif name == NNG_OPT_SUB_UNSUBSCRIBE:
     s.options.validateAccess(name, isSet = true, optKindString)
     if s.engineKind == engSub0:
       var b = newSeq[byte](val.len)
-      for i in 0 ..< val.len:
-        b[i] = byte(val[i])
+      if val.len > 0:
+        copyMem(addr b[0], unsafeAddr val[0], val.len)
       s.sub0Eng.unsubscribe(b)
   else:
     s.options.setString(name, val)
@@ -679,7 +675,7 @@ proc openContext*(s: Socket): Context =
   result.ctxId = cid
   result.options = newOptionStore(entContext)
   result.closed = false
-  result.recvQueue = @[]
+  result.recvQueue = initDeque[SpMsg]()
   s.contexts[cid] = result
 
 proc close*(ctx: Context) =
@@ -706,10 +702,10 @@ proc unsubscribe*(ctx: Context, topic: openArray[byte]) =
       break
   if idx >= 0:
     ctx.sub0Topics.delete(idx)
-    var kept: seq[SpMsg] = @[]
+    var kept = initDeque[SpMsg]()
     for m in ctx.recvQueue:
       if matchesTopicList(ctx.sub0Topics, m.body):
-        kept.add(m)
+        kept.addLast(m)
     ctx.recvQueue = kept
   else:
     raise newNngError(NNG_ENOENT, "Subscription not found")
@@ -718,7 +714,7 @@ proc sendMsg*(ctx: Context, msg: SpMsg) =
   if ctx.closed or ctx.socket.closed:
     raise newNngError(NNG_ECLOSED, "Context or socket is closed")
   if ctx.socket.engineKind == engReq0:
-    ctx.recvQueue.setLen(0)
+    ctx.recvQueue.clear()
     ctx.socket.updateRecvFd()
   let ev =
     EngineEvent(kind: evUserSend, ctxId: ctx.ctxId, msg: msg, nowMs: currentNowMs())
@@ -738,8 +734,8 @@ proc send*(ctx: Context, data: openArray[byte]) =
 
 proc send*(ctx: Context, str: string) =
   var bytes = newSeq[byte](str.len)
-  for i in 0 ..< str.len:
-    bytes[i] = byte(str[i])
+  if str.len > 0:
+    copyMem(addr bytes[0], unsafeAddr str[0], str.len)
   ctx.send(bytes)
 
 proc recvMsg*(ctx: Context, timeoutMs: int = -1): SpMsg =
@@ -773,8 +769,7 @@ proc recvMsg*(ctx: Context, timeoutMs: int = -1): SpMsg =
       ctx.lastErr = 0
       raise newNngError(err, "Context error: " & $err)
   if ctx.recvQueue.len > 0:
-    result = ctx.recvQueue[0]
-    ctx.recvQueue.delete(0)
+    result = ctx.recvQueue.popFirst()
     if result.pipeId != 0 and result.pipeId in ctx.socket.pipes:
       ctx.socket.pipes[result.pipeId].drain()
     ctx.socket.updateRecvFd()
@@ -788,8 +783,8 @@ proc recv*(ctx: Context, timeoutMs: int = -1): seq[byte] =
 proc recvStr*(ctx: Context, timeoutMs: int = -1): string =
   let body = ctx.recv(timeoutMs)
   result = newString(body.len)
-  for i in 0 ..< body.len:
-    result[i] = char(body[i])
+  if body.len > 0:
+    copyMem(addr result[0], unsafeAddr body[0], body.len)
 
 proc setOpt*(ctx: Context, name: string, val: int) =
   ctx.options.setInt(name, val)
@@ -1154,20 +1149,20 @@ proc sendMsg*(s: Socket, msg: SpMsg, ctxId: uint32 = 0) =
     raise newNngError(NNG_ECLOSED, "Socket is closed")
   if s.engineKind == engReq0:
     if ctxId != 0 and ctxId in s.contexts:
-      s.contexts[ctxId].recvQueue.setLen(0)
+      s.contexts[ctxId].recvQueue.clear()
     else:
-      s.recvQueue.setLen(0)
+      s.recvQueue.clear()
     s.updateRecvFd()
   elif s.engineKind == engSurveyor0:
     if ctxId != 0 and ctxId in s.contexts:
       let ctx = s.contexts[ctxId]
-      ctx.recvQueue.setLen(0)
+      ctx.recvQueue.clear()
       if ctx.pendingRecvCb != nil:
         let cb = ctx.pendingRecvCb
         ctx.pendingRecvCb = nil
         cb(NNG_ECANCELED, SpMsg())
     else:
-      s.recvQueue.setLen(0)
+      s.recvQueue.clear()
       if s.pendingRecvCb != nil:
         let cb = s.pendingRecvCb
         s.pendingRecvCb = nil
@@ -1176,7 +1171,7 @@ proc sendMsg*(s: Socket, msg: SpMsg, ctxId: uint32 = 0) =
   if s.pipes.len == 0 and s.options.getInt(NNG_OPT_SENDBUF) > 0:
     let maxSend = s.options.getInt(NNG_OPT_SENDBUF)
     if s.sendQueue.len < maxSend:
-      s.sendQueue.add(msg)
+      s.sendQueue.addLast(msg)
       s.updateSendFd()
       return
     else:
@@ -1201,8 +1196,8 @@ proc send*(s: Socket, data: openArray[byte], ctxId: uint32 = 0) =
 
 proc send*(s: Socket, str: string) =
   var bytes = newSeq[byte](str.len)
-  for i in 0 ..< str.len:
-    bytes[i] = byte(str[i])
+  if str.len > 0:
+    copyMem(addr bytes[0], unsafeAddr str[0], str.len)
   s.send(bytes)
 
 proc recvMsg*(s: Socket, timeoutMs: int = -1): SpMsg =
@@ -1240,8 +1235,7 @@ proc recvMsg*(s: Socket, timeoutMs: int = -1): SpMsg =
       s.lastErr = 0
       raise newNngError(err, "Socket error: " & $err)
   if s.recvQueue.len > 0:
-    result = s.recvQueue[0]
-    s.recvQueue.delete(0)
+    result = s.recvQueue.popFirst()
     if result.pipeId != 0 and result.pipeId in s.pipes:
       s.pipes[result.pipeId].drain()
     s.updateRecvFd()
@@ -1255,8 +1249,8 @@ proc recv*(s: Socket, timeoutMs: int = -1): seq[byte] =
 proc recvStr*(s: Socket, timeoutMs: int = -1): string =
   let body = s.recv(timeoutMs)
   result = newString(body.len)
-  for i in 0 ..< body.len:
-    result[i] = char(body[i])
+  if body.len > 0:
+    copyMem(addr result[0], unsafeAddr body[0], body.len)
 
 proc poll*(s: Socket, timeoutMs: int = 0): bool =
   if s.closed:
@@ -1276,17 +1270,17 @@ proc subscribe*(s: Socket, topic: openArray[byte]) =
 
 proc subscribe*(s: Socket, topic: string) =
   var bytes = newSeq[byte](topic.len)
-  for i in 0 ..< topic.len:
-    bytes[i] = byte(topic[i])
+  if topic.len > 0:
+    copyMem(addr bytes[0], unsafeAddr topic[0], topic.len)
   s.subscribe(bytes)
 
 proc unsubscribe*(s: Socket, topic: openArray[byte]) =
   if s.engineKind == engSub0:
     s.sub0Eng.unsubscribe(topic)
-    var kept: seq[SpMsg] = @[]
+    var kept = initDeque[SpMsg]()
     for m in s.recvQueue:
       if s.sub0Eng.matchesTopic(m.body):
-        kept.add(m)
+        kept.addLast(m)
     s.recvQueue = kept
     s.updateRecvFd()
   else:
@@ -1294,8 +1288,8 @@ proc unsubscribe*(s: Socket, topic: openArray[byte]) =
 
 proc unsubscribe*(s: Socket, topic: string) =
   var bytes = newSeq[byte](topic.len)
-  for i in 0 ..< topic.len:
-    bytes[i] = byte(topic[i])
+  if topic.len > 0:
+    copyMem(addr bytes[0], unsafeAddr topic[0], topic.len)
   s.unsubscribe(bytes)
 
 proc close*(s: Socket) =

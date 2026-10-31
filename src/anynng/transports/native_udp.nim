@@ -60,8 +60,8 @@ when not defined(js):
       if not sock.isClosed:
         let pkt = encodeUdpDataFrame(proto, SpMsg(body: @data))
         var sOut = newString(pkt.len)
-        for i in 0 ..< pkt.len:
-          sOut[i] = char(pkt[i])
+        if pkt.len > 0:
+          copyMem(addr sOut[0], unsafeAddr pkt[0], pkt.len)
         asyncCheck sock.sendTo(host, Port(port), sOut)
 
     let closeCb = proc() =
@@ -154,8 +154,8 @@ when not defined(js):
                   if not sock.isClosed:
                     let pkt = encodeUdpDataFrame(proto, SpMsg(body: @data))
                     var sOut = newString(pkt.len)
-                    for i in 0 ..< pkt.len:
-                      sOut[i] = char(pkt[i])
+                    if pkt.len > 0:
+                      copyMem(addr sOut[0], unsafeAddr pkt[0], pkt.len)
                     asyncCheck sock.sendTo(targetAddr, targetPort, sOut)
 
                 let closeCb = proc() =

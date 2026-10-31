@@ -112,15 +112,15 @@ when not defined(js):
     const Magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     let combined = clientKey & Magic
     var combinedBytes = newSeq[byte](combined.len)
-    for i in 0 ..< combined.len:
-      combinedBytes[i] = byte(combined[i])
+    if combined.len > 0:
+      copyMem(addr combinedBytes[0], unsafeAddr combined[0], combined.len)
     let digest = sha1Digest(combinedBytes)
     return encode(digest)
 
   proc sendBytes(sock: AsyncSocket, data: seq[byte]) {.async.} =
     var s = newString(data.len)
-    for i in 0 ..< data.len:
-      s[i] = char(data[i])
+    if data.len > 0:
+      copyMem(addr s[0], unsafeAddr data[0], data.len)
     await sock.send(s)
 
   proc readWsLoop(
@@ -232,8 +232,8 @@ when not defined(js):
         # Client sends MASKED frames (WARN-04)
         let frame = packWsFrame(0x2, data, mask = true)
         var sOut = newString(frame.len)
-        for i in 0 ..< frame.len:
-          sOut[i] = char(frame[i])
+        if frame.len > 0:
+          copyMem(addr sOut[0], unsafeAddr frame[0], frame.len)
         asyncCheck sock.send(sOut)
 
     let closeCb = proc() =
@@ -339,8 +339,8 @@ when not defined(js):
               # Server sends UNMASKED frames (WARN-04)
               let frame = packWsFrame(0x2, data, mask = false)
               var sOut = newString(frame.len)
-              for i in 0 ..< frame.len:
-                sOut[i] = char(frame[i])
+              if frame.len > 0:
+                copyMem(addr sOut[0], unsafeAddr frame[0], frame.len)
               asyncCheck clientSock.send(sOut)
 
           let closeCb = proc() =

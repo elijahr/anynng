@@ -293,7 +293,10 @@ export class AnynngBridge implements AnynngInstance {
         let actData: Uint8Array;
         if (payloadLen > 0 && offset + payloadLen <= rc) {
           actData = new Uint8Array(
-            this.memory.buffer.slice(outPtr + offset, outPtr + offset + payloadLen),
+            this.memory.buffer.slice(
+              outPtr + offset,
+              outPtr + offset + payloadLen,
+            ),
           );
           offset += payloadLen;
         } else {
