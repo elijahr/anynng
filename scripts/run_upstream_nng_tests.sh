@@ -33,7 +33,7 @@ fi
 # 2. Build libanynng.dylib C-ABI shared library
 echo "Building libanynng.dylib from src/anynng/c_api.nim..."
 mkdir -p dist
-nim c --app:lib -d:release --out:dist/libanynng.dylib src/anynng/c_api.nim
+nim c -f --app:lib -d:release --out:dist/libanynng.dylib src/anynng/c_api.nim
 if [[ "$OSTYPE" == "darwin"* ]]; then
     install_name_tool -id @rpath/libanynng.dylib dist/libanynng.dylib 2>/dev/null || true
 fi
