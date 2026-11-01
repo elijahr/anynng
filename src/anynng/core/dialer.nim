@@ -14,7 +14,6 @@ proc newDialer*(s: Socket, urlStr: string): Dialer =
   result.socket = s
   result.url = urlStr
   result.options = newOptionStore(entDialer)
-  result.options.setStringInternal(NNG_OPT_URL, urlStr)
   result.closed = false
   result.started = false
   result.tlsCfg = nil
@@ -25,12 +24,17 @@ proc setOpt*(d: Dialer, name: string, val: int64) =
 proc setOpt*(d: Dialer, name: string, val: bool) =
   d.options.setBool(name, val)
 
-proc setOpt*(d: Dialer, name: string, val: TlsConfig) =
-  d.options.setPtr(NNG_OPT_TLS_CONFIG, cast[pointer](val))
-  d.tlsCfg = val
+proc setTls*(d: Dialer, cfg: TlsConfig) =
+  d.tlsCfg = cfg
+
+proc getTls*(d: Dialer): TlsConfig =
+  d.tlsCfg
+
+proc getUrl*(d: Dialer): string =
+  d.url
 
 proc setTlsConfig*(d: Dialer, val: TlsConfig) {.inline.} =
-  d.setOpt(NNG_OPT_TLS_CONFIG, val)
+  d.setTls(val)
 
 proc getOpt*(d: Dialer, name: string): OptionValue =
   if name notin d.options.values:

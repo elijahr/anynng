@@ -33,7 +33,8 @@ when not defined(js):
       let sock = openPair0()
       var caught = false
       try:
-        discard sock.getInt(NNG_OPT_PROTONAME)
+        # NNG_OPT_TCP_NODELAY is a boolean option
+        discard sock.getInt(NNG_OPT_TCP_NODELAY)
       except NngError as e:
         check e.errCode == NNG_EBADTYPE
         caught = true
@@ -42,24 +43,30 @@ when not defined(js):
 
     test "Error NNG_EREADONLY (24) on attempt to set read-only option":
       let sock = openPair0()
+      let listener = sock.newListener("tcp://127.0.0.1:0")
       var caught = false
       try:
-        sock.setOpt(NNG_OPT_PROTO, 99)
+        # NNG_OPT_BOUND_PORT is read-only
+        listener.options.setInt(NNG_OPT_BOUND_PORT, 9999)
       except NngError as e:
         check e.errCode == NNG_EREADONLY
         caught = true
       check caught
+      listener.close()
       sock.close()
 
     test "Error NNG_EWRITEONLY (25) on attempt to get write-only option":
-      let sock = openSub0()
+      let sock = openPair0()
+      let listener = sock.newListener("tcp://127.0.0.1:0")
       var caught = false
       try:
-        discard sock.getString(NNG_OPT_SUB_SUBSCRIBE)
+        # NNG_OPT_LISTEN_FD is write-only
+        discard listener.getInt(NNG_OPT_LISTEN_FD)
       except NngError as e:
         check e.errCode == NNG_EWRITEONLY
         caught = true
       check caught
+      listener.close()
       sock.close()
 
     test "Error NNG_ENOTSUP (9) on unsupported option":
@@ -77,28 +84,41 @@ when not defined(js):
       let sock = openPair0()
       var caught = false
       try:
-        sock.setOpt(NNG_OPT_MAXTTL, 999) # Out of range 1..255
+        sock.setOpt(NNG_OPT_MAXTTL, 999) # Out of range 1..15
       except NngError as e:
         check e.errCode == NNG_EINVAL
         caught = true
       check caught
       sock.close()
 
+    test "Pure NNG v2 Socket introspection properties":
+      let sock = openPair0()
+      check sock.protoId() == 0x10 # PROTO_PAIR0
+      check sock.peerId() == 0x10 # PROTO_PAIR0
+      check sock.protoName() == "pair"
+      check sock.peerName() == "pair"
+      check sock.isRaw() == false
+      check sock.recvPollFd() >= 0
+      check sock.sendPollFd() >= 0
+      sock.close()
+
   suite "Two-Step Dialer & Listener Lifecycle and Port-0 Binding":
-    test "Listener binds port 0 and populates NNG_OPT_TCP_BOUND_PORT":
+    test "Listener binds port 0 and populates NNG_OPT_BOUND_PORT":
       let repSock = openRep0()
       let listener = repSock.newListener("tcp://127.0.0.1:0")
       listener.setOpt(NNG_OPT_TCP_NODELAY, true)
       listener.start()
 
-      let boundPort = listener.getInt(NNG_OPT_TCP_BOUND_PORT)
+      let boundPort = listener.getInt(NNG_OPT_BOUND_PORT)
       check boundPort > 0
-      check listener.getSockAddr(NNG_OPT_LOCADDR) == "127.0.0.1:" & $boundPort
+      check listener.boundPort == boundPort
+      check listener.getUrl() == "tcp://127.0.0.1:0"
 
       let reqSock = openReq0()
       let dialer = reqSock.newDialer("tcp://127.0.0.1:" & $boundPort)
       dialer.setOpt(NNG_OPT_TCP_NODELAY, true)
       dialer.start()
+      check dialer.getUrl() == "tcp://127.0.0.1:" & $boundPort
 
       reqSock.send("two-step ping")
       check repSock.recvStr() == "two-step ping"
@@ -114,6 +134,9 @@ when not defined(js):
     test "pipeNotify fires ADD_PRE, ADD_POST, and REM_POST":
       var eventsFired: seq[PipeEvent] = @[]
       var observedPipeId: PipeId = 0
+      var observedScheme = ""
+      var observedSelfAddr = ""
+      var observedPeerAddr = ""
 
       let lSock = openPair0()
       lSock.pipeNotify(
@@ -126,6 +149,9 @@ when not defined(js):
         proc(p: Pipe, ev: PipeEvent) =
           eventsFired.add(ev)
           observedPipeId = p.id
+          observedScheme = p.scheme
+          observedSelfAddr = p.selfAddr
+          observedPeerAddr = p.peerAddr
           check p.socket == lSock
         ,
       )
@@ -136,7 +162,7 @@ when not defined(js):
       )
 
       let listener = lSock.listen("tcp://127.0.0.1:0")
-      let port = listener.getInt(NNG_OPT_TCP_BOUND_PORT)
+      let port = listener.getInt(NNG_OPT_BOUND_PORT)
 
       let dSock = openPair0()
       dSock.dial("tcp://127.0.0.1:" & $port)
@@ -147,6 +173,9 @@ when not defined(js):
       check eventsFired.contains(pipeEvAddPre)
       check eventsFired.contains(pipeEvAddPost)
       check observedPipeId > 0
+      check observedScheme == "tcp"
+      check observedSelfAddr.len > 0
+      check observedPeerAddr.len > 0
 
       dSock.close()
       # Give dispatcher a moment to process disconnect
@@ -167,7 +196,7 @@ when not defined(js):
       )
 
       let listener = lSock.listen("tcp://127.0.0.1:0")
-      let port = listener.getInt(NNG_OPT_TCP_BOUND_PORT)
+      let port = listener.getInt(NNG_OPT_BOUND_PORT)
 
       let dSock = openPair0()
       try:
@@ -186,7 +215,7 @@ when not defined(js):
     test "Multiple contexts on single REQ0 socket multiplex cleanly":
       let repSock = openRep0()
       let listener = repSock.listen("tcp://127.0.0.1:0")
-      let port = listener.getInt(NNG_OPT_TCP_BOUND_PORT)
+      let port = listener.getInt(NNG_OPT_BOUND_PORT)
 
       let reqSock = openReq0()
       reqSock.dial("tcp://127.0.0.1:" & $port)
@@ -297,19 +326,21 @@ when not defined(js):
 
       let lSock = openPair0()
       let listener = lSock.newListener("tls+tcp://127.0.0.1:0")
-      listener.setOpt(NNG_OPT_TLS_CONFIG, srvCfg)
+      listener.setTls(srvCfg)
       listener.start()
 
-      let port = listener.getInt(NNG_OPT_TCP_BOUND_PORT)
+      let port = listener.getInt(NNG_OPT_BOUND_PORT)
       check port > 0
+      check listener.getTls() == srvCfg
 
       let clientCfg = newTlsConfig(tlsModeClient)
       clientCfg.setAuthMode(tlsAuthModeNone) # Self-signed test cert
 
       let dSock = openPair0()
       let dialer = dSock.newDialer("tls+tcp://127.0.0.1:" & $port)
-      dialer.setOpt(NNG_OPT_TLS_CONFIG, clientCfg)
+      dialer.setTls(clientCfg)
       dialer.start()
+      check dialer.getTls() == clientCfg
 
       dSock.send("hello over tls+tcp")
       check lSock.recvStr() == "hello over tls+tcp"
@@ -332,10 +363,10 @@ when not defined(js):
 
       let lSock = openPair0()
       let listener = lSock.newListener("wss://127.0.0.1:0/test")
-      listener.setOpt(NNG_OPT_TLS_CONFIG, srvCfg)
+      listener.setTls(srvCfg)
       listener.start()
 
-      let port = listener.getInt(NNG_OPT_TCP_BOUND_PORT)
+      let port = listener.getInt(NNG_OPT_BOUND_PORT)
       check port > 0
 
       let clientCfg = newTlsConfig(tlsModeClient)
@@ -343,7 +374,7 @@ when not defined(js):
 
       let dSock = openPair0()
       let dialer = dSock.newDialer("wss://127.0.0.1:" & $port & "/test")
-      dialer.setOpt(NNG_OPT_TLS_CONFIG, clientCfg)
+      dialer.setTls(clientCfg)
       dialer.start()
 
       dSock.send("hello over wss")

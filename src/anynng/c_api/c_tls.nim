@@ -105,5 +105,14 @@ proc nng_tls_config_version*(
   c.setVersion(minTls, maxTls)
   return 0
 
+proc nng_tls_config_hold*(cfg: pointer) {.exportc, dynlib, cdecl.} =
+  discard
+
 proc nng_tls_engine_name*(): cstring {.exportc, dynlib, cdecl.} =
   return "openssl"
+
+proc nng_tls_engine_description*(): cstring {.exportc, dynlib, cdecl.} =
+  return "OpenSSL TLS Engine"
+
+proc nng_tls_engine_fips_mode*(): bool {.exportc, dynlib, cdecl.} =
+  return false

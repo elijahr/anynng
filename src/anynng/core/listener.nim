@@ -14,7 +14,6 @@ proc newListener*(s: Socket, urlStr: string): Listener =
   result.socket = s
   result.url = urlStr
   result.options = newOptionStore(entListener)
-  result.options.setStringInternal(NNG_OPT_URL, urlStr)
   result.closed = false
   result.started = false
   result.boundPort = 0
@@ -23,12 +22,17 @@ proc newListener*(s: Socket, urlStr: string): Listener =
 proc setOpt*(l: Listener, name: string, val: bool) =
   l.options.setBool(name, val)
 
-proc setOpt*(l: Listener, name: string, val: TlsConfig) =
-  l.options.setPtr(NNG_OPT_TLS_CONFIG, cast[pointer](val))
-  l.tlsCfg = val
+proc setTls*(l: Listener, cfg: TlsConfig) =
+  l.tlsCfg = cfg
+
+proc getTls*(l: Listener): TlsConfig =
+  l.tlsCfg
+
+proc getUrl*(l: Listener): string =
+  l.url
 
 proc setTlsConfig*(l: Listener, val: TlsConfig) {.inline.} =
-  l.setOpt(NNG_OPT_TLS_CONFIG, val)
+  l.setTls(val)
 
 proc getOpt*(l: Listener, name: string): OptionValue =
   if name notin l.options.values:
@@ -40,9 +44,6 @@ proc getInt*(l: Listener, name: string): int =
 
 proc getString*(l: Listener, name: string): string =
   l.options.getString(name)
-
-proc getSockAddr*(l: Listener, name: string): string =
-  l.options.getSockAddr(name)
 
 proc start*(l: Listener) =
   if l.closed:
@@ -78,9 +79,7 @@ proc start*(l: Listener) =
           l.socket.detachCustomPipe(pid),
       )
       l.boundPort = tcpListener.boundPort
-      l.options.setIntInternal(NNG_OPT_TCP_BOUND_PORT, l.boundPort)
       l.options.setIntInternal(NNG_OPT_BOUND_PORT, l.boundPort)
-      l.options.setSockAddrInternal(NNG_OPT_LOCADDR, "127.0.0.1:" & $l.boundPort)
       l.closeImpl = proc() =
         tcpListener.close()
     else:
@@ -102,9 +101,7 @@ proc start*(l: Listener) =
           l.socket.detachCustomPipe(pid),
       )
       l.boundPort = tlsListener.boundPort
-      l.options.setIntInternal(NNG_OPT_TCP_BOUND_PORT, l.boundPort)
       l.options.setIntInternal(NNG_OPT_BOUND_PORT, l.boundPort)
-      l.options.setSockAddrInternal(NNG_OPT_LOCADDR, "127.0.0.1:" & $l.boundPort)
       l.closeImpl = proc() =
         tlsListener.close()
     else:
@@ -163,9 +160,7 @@ proc start*(l: Listener) =
         tlsCfg = l.tlsCfg,
       )
       l.boundPort = wsListener.boundPort
-      l.options.setIntInternal(NNG_OPT_TCP_BOUND_PORT, l.boundPort)
       l.options.setIntInternal(NNG_OPT_BOUND_PORT, l.boundPort)
-      l.options.setSockAddrInternal(NNG_OPT_LOCADDR, "127.0.0.1:" & $l.boundPort)
       l.closeImpl = proc() =
         wsListener.close()
     else:

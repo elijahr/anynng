@@ -37,12 +37,6 @@ proc newSocket*(proto: SpProto, raw: bool = false): Socket =
     result.recvFdReadable = false
     result.sendFdWritable = false
 
-  result.options.setIntInternal(NNG_OPT_PROTO, int(proto))
-  result.options.setStringInternal(NNG_OPT_PROTONAME, protoName(proto))
-  result.options.setIntInternal(NNG_OPT_PEER, int(peerProto(proto)))
-  result.options.setStringInternal(NNG_OPT_PEERNAME, protoName(peerProto(proto)))
-  result.options.setBoolInternal(NNG_OPT_RAW, raw)
-
   if proto in {spPair0, spPair1, spPush0}:
     result.options.setIntInternal(NNG_OPT_SENDBUF, 0)
     result.options.setIntInternal(NNG_OPT_RECVBUF, 0)
@@ -380,26 +374,47 @@ proc setOpt*(s: Socket, name: string, val: int64) =
   elif name == NNG_OPT_SURVEYOR_SURVEYTIME and s.engineKind == engSurveyor0:
     s.surveyor0Eng.surveyTimeMs = val
 
+proc protoId*(s: Socket): uint16 =
+  uint16(s.proto)
+
+proc peerId*(s: Socket): uint16 =
+  uint16(peerProto(s.proto))
+
+proc protoName*(s: Socket): string =
+  protoName(s.proto)
+
+proc peerName*(s: Socket): string =
+  protoName(peerProto(s.proto))
+
+proc isRaw*(s: Socket): bool =
+  s.raw
+
+proc recvPollFd*(s: Socket): cint =
+  when defined(js):
+    -1
+  else:
+    if s.closed or s.engineKind in {engPub0, engPush0}:
+      -1
+    else:
+      cint(s.recvFds[0])
+
+proc sendPollFd*(s: Socket): cint =
+  when defined(js):
+    -1
+  else:
+    if s.closed or s.engineKind in {engSub0, engPull0}:
+      -1
+    else:
+      cint(s.sendFds[0])
+
 proc setOpt*(s: Socket, name: string, val: uint64) =
-  s.options.setSize(name, val)
+  if name in gOptionDescriptors and gOptionDescriptors[name].kind == optKindUint64:
+    s.options.setUint64(name, val)
+  else:
+    s.options.setSize(name, val)
 
 proc setOpt*(s: Socket, name: string, val: string) =
-  if name == NNG_OPT_SUB_SUBSCRIBE:
-    s.options.validateAccess(name, isSet = true, optKindString)
-    if s.engineKind == engSub0:
-      var b = newSeq[byte](val.len)
-      if val.len > 0:
-        copyMem(addr b[0], unsafeAddr val[0], val.len)
-      s.sub0Eng.subscribe(b)
-  elif name == NNG_OPT_SUB_UNSUBSCRIBE:
-    s.options.validateAccess(name, isSet = true, optKindString)
-    if s.engineKind == engSub0:
-      var b = newSeq[byte](val.len)
-      if val.len > 0:
-        copyMem(addr b[0], unsafeAddr val[0], val.len)
-      s.sub0Eng.unsubscribe(b)
-  else:
-    s.options.setString(name, val)
+  s.options.setString(name, val)
 
 proc getBool*(s: Socket, name: string): bool =
   if name == NNG_OPT_PAIR1_POLY and s.engineKind == engPair1:
@@ -407,11 +422,6 @@ proc getBool*(s: Socket, name: string): bool =
   s.options.getBool(name)
 
 proc getInt*(s: Socket, name: string): int =
-  when not defined(js):
-    if name == NNG_OPT_RECVFD:
-      return int(s.recvFds[0])
-    elif name == NNG_OPT_SENDFD:
-      return int(s.sendFds[0])
   s.options.getInt(name)
 
 proc getMs*(s: Socket, name: string): int64 =
@@ -419,6 +429,9 @@ proc getMs*(s: Socket, name: string): int64 =
 
 proc getSize*(s: Socket, name: string): uint64 =
   s.options.getSize(name)
+
+proc getUint64*(s: Socket, name: string): uint64 =
+  s.options.getUint64(name)
 
 proc getString*(s: Socket, name: string): string =
   s.options.getString(name)

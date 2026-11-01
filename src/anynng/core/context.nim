@@ -147,6 +147,18 @@ proc setOpt*(ctx: Context, name: string, val: int) =
 proc setOpt*(ctx: Context, name: string, val: int64) =
   ctx.options.setMs(name, val)
 
+proc setOpt*(ctx: Context, name: string, val: bool) =
+  ctx.options.setBool(name, val)
+
+proc getBool*(ctx: Context, name: string): bool =
+  ctx.options.getBool(name)
+
+proc setOpt*(ctx: Context, name: string, val: uint64) =
+  ctx.options.setSize(name, val)
+
+proc getSize*(ctx: Context, name: string): uint64 =
+  ctx.options.getSize(name)
+
 proc getInt*(ctx: Context, name: string): int =
   ctx.options.getInt(name)
 

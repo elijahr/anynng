@@ -1,7 +1,7 @@
 # anynng - Pure-Nim multi-target (C, JS, WASM) and multi-transport NNG / Scalability Protocols
 # Licensed under MIT License.
 
-import std/[tables, deques]
+import std/[tables, deques, strutils]
 import ./[types, options, runtime_types, socket]
 import ../transports/inproc
 
@@ -160,6 +160,37 @@ proc listener*(p: Pipe): Listener =
   (if p == nil or p.listenerPtr == nil: nil
   else: cast[Listener](p.listenerPtr))
 
+proc selfAddr*(p: Pipe): string =
+  p.locAddr
+
+proc peerAddr*(p: Pipe): string =
+  p.remAddr
+
+proc scheme*(p: Pipe): string =
+  if p == nil:
+    return ""
+  if p.schemeStr.len > 0:
+    return p.schemeStr
+  let d = p.dialer()
+  if d != nil and d.url.len > 0:
+    let idx = d.url.find("://")
+    if idx >= 0:
+      return d.url[0 ..< idx]
+  let l = p.listener()
+  if l != nil and l.url.len > 0:
+    let idx = l.url.find("://")
+    if idx >= 0:
+      return l.url[0 ..< idx]
+  if p.locAddr.len > 0:
+    let idx = p.locAddr.find("://")
+    if idx >= 0:
+      return p.locAddr[0 ..< idx]
+  if p.remAddr.len > 0:
+    let idx = p.remAddr.find("://")
+    if idx >= 0:
+      return p.remAddr[0 ..< idx]
+  "inproc"
+
 proc getBool*(p: Pipe, name: string): bool =
   case name
   of NNG_OPT_TLS_VERIFIED:
@@ -171,9 +202,5 @@ proc getString*(p: Pipe, name: string): string =
   case name
   of NNG_OPT_TLS_PEER_CN:
     p.tlsPeerCn
-  of NNG_OPT_LOCADDR:
-    p.locAddr
-  of NNG_OPT_REMADDR:
-    p.remAddr
   else:
     raise newNngError(NNG_ENOTSUP, "Option " & name & " not supported on pipe")

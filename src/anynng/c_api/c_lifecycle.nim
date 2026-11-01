@@ -43,6 +43,10 @@ proc nng_fini*() {.exportc, dynlib, cdecl.} =
   gPipes.clear()
 
 proc nng_strerror*(err: cint): cstring {.exportc, dynlib, cdecl.} =
+  if (err and cint(NNG_ESYSERR)) != 0:
+    return "System error"
+  if (err and cint(NNG_ETRANERR)) != 0:
+    return "Transport error"
   case int(err)
   of NNG_OK: "Success"
   of NNG_EINTR: "Interrupted"
@@ -72,8 +76,6 @@ proc nng_strerror*(err: cint): cstring {.exportc, dynlib, cdecl.} =
   of NNG_EWRITEONLY: "Write-only resource"
   of NNG_ECRYPTO: "Cryptographic error"
   of NNG_EPEERAUTH: "Peer authentication failed"
-  of NNG_ENOARG: "Option requires an argument"
-  of NNG_EAMBIGUOUS: "Ambiguous option"
   of NNG_EBADTYPE: "Incorrect type"
   of NNG_ECONNSHUT: "Connection shut down"
   of NNG_EINTERNAL: "Internal error"

@@ -136,18 +136,20 @@ proc nng_ctx_recvmsg*(
   except CatchableError as e:
     return toCError(e)
 
-# Context Options
-proc nng_ctx_get*(
-    c: NngCtxObj, name: cstring, val: pointer, szp: ptr csize_t
+# Context Options (Pure NNG v2.1.0)
+proc nng_ctx_get_bool*(
+    c: NngCtxObj, name: cstring, val: ptr bool
 ): cint {.exportc, dynlib, cdecl.} =
   if c.id in gClosedCtxs:
     return cint(NNG_ECLOSED)
-  if c.id notin gContexts or name == nil or szp == nil:
+  if c.id notin gContexts or name == nil or val == nil:
     return cint(NNG_EINVAL)
-  let optName = $name
-  if optName in [NNG_OPT_SUB_SUBSCRIBE, NNG_OPT_SUB_UNSUBSCRIBE]:
-    return cint(NNG_EWRITEONLY)
-  return cint(NNG_ENOTSUP)
+  let ctx = gContexts[c.id]
+  try:
+    val[] = ctx.options.getBool($name)
+    return 0
+  except CatchableError as e:
+    return toCError(e)
 
 proc nng_ctx_get_int*(
     c: NngCtxObj, name: cstring, val: ptr cint
@@ -156,67 +158,94 @@ proc nng_ctx_get_int*(
     return cint(NNG_ECLOSED)
   if c.id notin gContexts or name == nil or val == nil:
     return cint(NNG_EINVAL)
-  let optName = $name
-  if optName in [NNG_OPT_SENDFD, NNG_OPT_RECVFD]:
-    return cint(NNG_ENOTSUP)
   let ctx = gContexts[c.id]
   try:
-    val[] = cint(ctx.getInt(optName))
+    val[] = cint(ctx.getInt($name))
     return 0
   except CatchableError as e:
     return toCError(e)
 
-proc nng_ctx_set*(
-    c: NngCtxObj, name: cstring, val: pointer, sz: csize_t
+proc nng_ctx_get_size*(
+    c: NngCtxObj, name: cstring, val: ptr csize_t
+): cint {.exportc, dynlib, cdecl.} =
+  if c.id in gClosedCtxs:
+    return cint(NNG_ECLOSED)
+  if c.id notin gContexts or name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let ctx = gContexts[c.id]
+  try:
+    val[] = csize_t(ctx.options.getSize($name))
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_ctx_get_ms*(
+    c: NngCtxObj, name: cstring, val: ptr int32
+): cint {.exportc, dynlib, cdecl.} =
+  if c.id in gClosedCtxs:
+    return cint(NNG_ECLOSED)
+  if c.id notin gContexts or name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let ctx = gContexts[c.id]
+  try:
+    val[] = int32(ctx.getMs($name))
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_ctx_set_bool*(
+    c: NngCtxObj, name: cstring, val: bool
 ): cint {.exportc, dynlib, cdecl.} =
   if c.id in gClosedCtxs:
     return cint(NNG_ECLOSED)
   if c.id notin gContexts or name == nil:
     return cint(NNG_EINVAL)
   let ctx = gContexts[c.id]
-  let optName = $name
-  if optName == NNG_OPT_SUB_SUBSCRIBE:
-    if ctx.socket.engineKind == engSub0:
-      var b = newSeq[byte](sz)
-      if sz > 0 and val != nil:
-        copyMem(addr b[0], val, int(sz))
-      try:
-        ctx.subscribe(b)
-        return 0
-      except CatchableError as e:
-        return toCError(e)
-    return cint(NNG_ENOTSUP)
-  elif optName == NNG_OPT_SUB_UNSUBSCRIBE:
-    if ctx.socket.engineKind == engSub0:
-      var b = newSeq[byte](sz)
-      if sz > 0 and val != nil:
-        copyMem(addr b[0], val, int(sz))
-      try:
-        ctx.unsubscribe(b)
-        return 0
-      except CatchableError as e:
-        return toCError(e)
-    return cint(NNG_ENOTSUP)
   try:
-    if optName in ctx.options.values:
-      let entry = ctx.options.values[optName]
-      case entry.kind
-      of optKindInt:
-        if sz != csize_t(sizeof(cint)) or val == nil:
-          return cint(NNG_EINVAL)
-        let iv = cast[ptr cint](val)[]
-        ctx.setOpt(optName, int(iv))
-        return 0
-      of optKindDuration:
-        if sz != csize_t(sizeof(int32)) or val == nil:
-          return cint(NNG_EINVAL)
-        let mv = cast[ptr int32](val)[]
-        ctx.setOpt(optName, int(mv))
-        return 0
-      else:
-        return cint(NNG_ENOTSUP)
-    else:
-      return cint(NNG_ENOTSUP)
+    ctx.options.setBool($name, val)
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_ctx_set_int*(
+    c: NngCtxObj, name: cstring, val: cint
+): cint {.exportc, dynlib, cdecl.} =
+  if c.id in gClosedCtxs:
+    return cint(NNG_ECLOSED)
+  if c.id notin gContexts or name == nil:
+    return cint(NNG_EINVAL)
+  let ctx = gContexts[c.id]
+  try:
+    ctx.setOpt($name, int(val))
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_ctx_set_size*(
+    c: NngCtxObj, name: cstring, val: csize_t
+): cint {.exportc, dynlib, cdecl.} =
+  if c.id in gClosedCtxs:
+    return cint(NNG_ECLOSED)
+  if c.id notin gContexts or name == nil:
+    return cint(NNG_EINVAL)
+  let ctx = gContexts[c.id]
+  try:
+    ctx.options.setSize($name, uint64(val))
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_ctx_set_ms*(
+    c: NngCtxObj, name: cstring, val: int32
+): cint {.exportc, dynlib, cdecl.} =
+  if c.id in gClosedCtxs:
+    return cint(NNG_ECLOSED)
+  if c.id notin gContexts or name == nil:
+    return cint(NNG_EINVAL)
+  let ctx = gContexts[c.id]
+  try:
+    ctx.setOpt($name, int64(val))
+    return 0
   except CatchableError as e:
     return toCError(e)
 

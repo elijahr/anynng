@@ -5,7 +5,9 @@ when not defined(js):
   import std/[unittest, os, asyncdispatch, posix]
   import anynng
 
-  const LibNng = "/opt/homebrew/opt/nng/lib/libnng.dylib"
+  const LibNng =
+    currentSourcePath().parentDir.parentDir / ".cache" / "nng-upstream" / "build" /
+    "libnng.dylib"
   const NNG_FLAG_NONBLOCK = 2'i32
 
   type NngSocket = object
@@ -80,8 +82,8 @@ when not defined(js):
     d: ptr NngDialer, s: NngSocket, url: cstring
   ): cint {.importc, dynlib: LibNng.}
 
-  proc nng_dialer_set_ptr(
-    d: NngDialer, opt: cstring, val: pointer
+  proc nng_dialer_set_tls(
+    d: NngDialer, cfg: NngTlsConfig
   ): cint {.importc, dynlib: LibNng.}
 
   proc nng_dialer_start(d: NngDialer, flags: cint): cint {.importc, dynlib: LibNng.}
@@ -89,15 +91,16 @@ when not defined(js):
     l: ptr NngListener, s: NngSocket, url: cstring
   ): cint {.importc, dynlib: LibNng.}
 
-  proc nng_listener_set_ptr(
-    l: NngListener, opt: cstring, val: pointer
+  proc nng_listener_set_tls(
+    l: NngListener, cfg: NngTlsConfig
   ): cint {.importc, dynlib: LibNng.}
 
   proc nng_listener_start(l: NngListener, flags: cint): cint {.importc, dynlib: LibNng.}
   proc nng_tls_engine_name(): cstring {.importc, dynlib: LibNng.}
 
-  proc nng_close(s: NngSocket): cint {.importc, dynlib: LibNng.}
+  proc nng_socket_close(s: NngSocket): cint {.importc, dynlib: LibNng.}
   proc nng_version(): cstring {.importc, dynlib: LibNng.}
+  proc nng_init(params: pointer): cint {.importc, dynlib: LibNng.}
 
   proc flushEvents(count: int = 5, ms: int = 10) =
     for _ in 0 ..< count:
@@ -105,6 +108,8 @@ when not defined(js):
         poll(ms)
       except ValueError:
         break
+
+  discard nng_init(nil)
 
   suite "libnng C Interop - TCP (tcp://)":
     test "PAIR0: anynng dialer -> libnng listener":
@@ -134,7 +139,7 @@ when not defined(js):
       check rep == reply
 
       anySock.close()
-      discard nng_close(cSock)
+      discard nng_socket_close(cSock)
 
     test "PAIR0: libnng dialer -> anynng listener":
       let url = "tcp://127.0.0.1:16902"
@@ -170,7 +175,7 @@ when not defined(js):
 
       anySock.close()
       listener.close()
-      discard nng_close(cSock)
+      discard nng_socket_close(cSock)
 
     test "REQ0 / REP0: anynng REQ dialer -> libnng REP listener":
       let url = "tcp://127.0.0.1:16903"
@@ -198,7 +203,7 @@ when not defined(js):
       check rep == reply
 
       reqSock.close()
-      discard nng_close(repSock)
+      discard nng_socket_close(repSock)
 
     test "REQ0 / REP0: libnng REQ dialer -> anynng REP listener":
       let url = "tcp://127.0.0.1:16904"
@@ -234,7 +239,7 @@ when not defined(js):
 
       repSock.close()
       listener.close()
-      discard nng_close(reqSock)
+      discard nng_socket_close(reqSock)
 
     test "PUB0 / SUB0: anynng PUB listener -> libnng SUB dialer with topic filter":
       let url = "tcp://127.0.0.1:16905"
@@ -271,7 +276,7 @@ when not defined(js):
 
       pubSock.close()
       listener.close()
-      discard nng_close(subSock)
+      discard nng_socket_close(subSock)
 
     test "PUB0 / SUB0: libnng PUB listener -> anynng SUB dialer with topic filter":
       let url = "tcp://127.0.0.1:16915"
@@ -294,7 +299,7 @@ when not defined(js):
       check got == m2
 
       subSock.close()
-      discard nng_close(pubSock)
+      discard nng_socket_close(pubSock)
 
     test "PUSH0 / PULL0: anynng PUSH dialer -> libnng PULL listener":
       let url = "tcp://127.0.0.1:16906"
@@ -323,7 +328,7 @@ when not defined(js):
       check buf == "pipeline-packet-2"
 
       pushSock.close()
-      discard nng_close(pullSock)
+      discard nng_socket_close(pullSock)
 
     test "PUSH0 / PULL0: libnng PUSH dialer -> anynng PULL listener":
       let url = "tcp://127.0.0.1:16916"
@@ -348,7 +353,7 @@ when not defined(js):
 
       pullSock.close()
       listener.close()
-      discard nng_close(pushSock)
+      discard nng_socket_close(pushSock)
 
     test "SURVEYOR0 / RESPONDENT0: anynng SURVEYOR dialer -> libnng RESPONDENT listener":
       let url = "tcp://127.0.0.1:16907"
@@ -376,7 +381,7 @@ when not defined(js):
       check ans == rep
 
       survSock.close()
-      discard nng_close(respSock)
+      discard nng_socket_close(respSock)
 
     test "SURVEYOR0 / RESPONDENT0: libnng SURVEYOR dialer -> anynng RESPONDENT listener":
       let url = "tcp://127.0.0.1:16917"
@@ -411,7 +416,7 @@ when not defined(js):
 
       respSock.close()
       listener.close()
-      discard nng_close(survSock)
+      discard nng_socket_close(survSock)
 
     test "BUS0: anynng BUS dialer <-> libnng BUS listener":
       let url = "tcp://127.0.0.1:16908"
@@ -439,7 +444,7 @@ when not defined(js):
       check rep == reply
 
       anyBus.close()
-      discard nng_close(cBus)
+      discard nng_socket_close(cBus)
 
   suite "libnng C Interop - IPC (ipc://)":
     test "PAIR0: anynng dialer -> libnng listener":
@@ -471,7 +476,7 @@ when not defined(js):
       check rep == reply
 
       anySock.close()
-      discard nng_close(cSock)
+      discard nng_socket_close(cSock)
       discard unlink(cstring(path))
 
     test "PAIR0: libnng dialer -> anynng listener":
@@ -511,7 +516,7 @@ when not defined(js):
 
       anySock.close()
       listener.close()
-      discard nng_close(cSock)
+      discard nng_socket_close(cSock)
       var st: Stat
       check posix.stat(cstring(path), st) != 0
 
@@ -544,7 +549,7 @@ when not defined(js):
       check rep == reply
 
       reqSock.close()
-      discard nng_close(repSock)
+      discard nng_socket_close(repSock)
       discard unlink(cstring(path))
 
     test "REQ0 / REP0: libnng REQ dialer -> anynng REP listener":
@@ -584,7 +589,7 @@ when not defined(js):
 
       repSock.close()
       listener.close()
-      discard nng_close(reqSock)
+      discard nng_socket_close(reqSock)
       discard unlink(cstring(path))
 
     test "PUSH0 / PULL0: anynng PUSH dialer -> libnng PULL listener":
@@ -611,7 +616,7 @@ when not defined(js):
       check buf == "ipc pipeline message"
 
       pushSock.close()
-      discard nng_close(pullSock)
+      discard nng_socket_close(pullSock)
 
     test "PUSH0 / PULL0: libnng PUSH dialer -> anynng PULL listener":
       let path = "/tmp/anynng_interop_ipc4_rev.sock"
@@ -640,7 +645,7 @@ when not defined(js):
 
       pullSock.close()
       listener.close()
-      discard nng_close(pushSock)
+      discard nng_socket_close(pushSock)
       discard unlink(cstring(path))
 
   suite "libnng C Interop - RFC 6455 WebSocket (ws://)":
@@ -670,7 +675,7 @@ when not defined(js):
       check rep == reply
 
       anySock.close()
-      discard nng_close(cSock)
+      discard nng_socket_close(cSock)
 
     test "PAIR0: libnng dialer -> anynng listener":
       let url = "ws://127.0.0.1:16912/ws"
@@ -707,7 +712,7 @@ when not defined(js):
 
       anySock.close()
       listener.close()
-      discard nng_close(cSock)
+      discard nng_socket_close(cSock)
 
     test "REQ0 / REP0: anynng REQ dialer -> libnng REP listener":
       let url = "ws://127.0.0.1:16913/ws"
@@ -735,7 +740,7 @@ when not defined(js):
       check rep == reply
 
       reqSock.close()
-      discard nng_close(repSock)
+      discard nng_socket_close(repSock)
 
     test "REQ0 / REP0: libnng REQ dialer -> anynng REP listener":
       let url = "ws://127.0.0.1:16914/ws"
@@ -772,7 +777,7 @@ when not defined(js):
 
       repSock.close()
       listener.close()
-      discard nng_close(reqSock)
+      discard nng_socket_close(reqSock)
 
   suite "libnng C Interop - TLS over TCP (tls+tcp://)":
     test "PAIR0: anynng dialer -> libnng listener over tls+tcp://":
@@ -797,7 +802,7 @@ when not defined(js):
 
         var cListener: NngListener
         check nng_listener_create(addr cListener, cSock, cstring(url)) == 0
-        check nng_listener_set_ptr(cListener, "tls-config", cTlsCfg) == 0
+        check nng_listener_set_tls(cListener, cTlsCfg) == 0
         check nng_listener_start(cListener, 0) == 0
 
         let clientTls = newTlsConfig(tlsModeClient)
@@ -833,7 +838,7 @@ when not defined(js):
         check rep == reply
 
         anySock.close()
-        discard nng_close(cSock)
+        discard nng_socket_close(cSock)
         nng_tls_config_free(cTlsCfg)
 
     test "PAIR0: libnng dialer -> anynng listener over tls+tcp://":
@@ -865,7 +870,7 @@ when not defined(js):
 
         var cDialer: NngDialer
         check nng_dialer_create(addr cDialer, cSock, cstring(url)) == 0
-        check nng_dialer_set_ptr(cDialer, "tls-config", cTlsCfg) == 0
+        check nng_dialer_set_tls(cDialer, cTlsCfg) == 0
         check nng_dialer_start(cDialer, NNG_FLAG_NONBLOCK) == 0
 
         var s1: cint = -1
@@ -893,5 +898,5 @@ when not defined(js):
 
         anySock.close()
         listener.close()
-        discard nng_close(cSock)
+        discard nng_socket_close(cSock)
         nng_tls_config_free(cTlsCfg)

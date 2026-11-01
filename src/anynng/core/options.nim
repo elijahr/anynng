@@ -33,14 +33,19 @@ const
   NNG_EWRITEONLY* = 25
   NNG_ECRYPTO* = 26
   NNG_EPEERAUTH* = 27
-  NNG_ENOARG* = 28
-  NNG_EAMBIGUOUS* = 29
   NNG_EBADTYPE* = 30
   NNG_ECONNSHUT* = 31
   NNG_ESTOPPED* = 999
   NNG_EINTERNAL* = 1000
 
+  NNG_ESYSERR* = 0x10000000
+  NNG_ETRANERR* = 0x20000000
+
 func nngStrError*(err: int): string =
+  if (err and NNG_ESYSERR) != 0:
+    return "System error"
+  if (err and NNG_ETRANERR) != 0:
+    return "Transport error"
   case err
   of NNG_OK:
     "Success"
@@ -98,10 +103,6 @@ func nngStrError*(err: int): string =
     "Cryptographic error"
   of NNG_EPEERAUTH:
     "Peer authentication failed"
-  of NNG_ENOARG:
-    "Argument required"
-  of NNG_EAMBIGUOUS:
-    "Ambiguous argument"
   of NNG_EBADTYPE:
     "Incorrect type"
   of NNG_ECONNSHUT:
@@ -127,23 +128,13 @@ proc newNngError*(code: int, detail: string = ""): ref NngError =
 
 # Universal and Protocol-Specific Option Identifiers
 const
-  NNG_OPT_SOCKNAME* = "socket-name"
-  NNG_OPT_RAW* = "raw"
-  NNG_OPT_PROTO* = "protocol"
-  NNG_OPT_PROTONAME* = "protocol-name"
-  NNG_OPT_PEER* = "peer"
-  NNG_OPT_PEERNAME* = "peer-name"
   NNG_OPT_RECVBUF* = "recv-buffer"
   NNG_OPT_SENDBUF* = "send-buffer"
   NNG_OPT_RECVTIMEO* = "recv-timeout"
   NNG_OPT_SENDTIMEO* = "send-timeout"
-  NNG_OPT_LOCADDR* = "local-address"
-  NNG_OPT_REMADDR* = "remote-address"
-  NNG_OPT_URL* = "url"
   NNG_OPT_MAXTTL* = "ttl-max"
   NNG_OPT_RECONNMINT* = "reconnect-time-min"
   NNG_OPT_RECONNMAXT* = "reconnect-time-max"
-  NNG_OPT_TCP_BOUND_PORT* = "tcp-bound-port"
   NNG_OPT_BOUND_PORT* = "bound-port"
   NNG_OPT_UDP_COPY_MAX* = "udp:copy-max"
   NNG_OPT_UDP_CONN_RETRY* = "udp:conn-retry"
@@ -152,30 +143,49 @@ const
   NNG_OPT_DTLS_CONN_RATE* = "dtls:conn-rate"
   NNG_OPT_TCP_NODELAY* = "tcp-nodelay"
   NNG_OPT_TCP_KEEPALIVE* = "tcp-keepalive"
-  NNG_OPT_TLS_CONFIG* = "tls-config"
-  NNG_OPT_TLS_AUTH_MODE* = "tls-authmode"
-  NNG_OPT_TLS_CA_FILE* = "tls-ca-file"
-  NNG_OPT_TLS_CERT_KEY_FILE* = "tls-cert-key-file"
-  NNG_OPT_TLS_SERVER_NAME* = "tls-server-name"
   NNG_OPT_TLS_VERIFIED* = "tls-verified"
   NNG_OPT_TLS_PEER_CN* = "tls-peer-cn"
-  NNG_OPT_TLS_PEER_ALT_NAMES* = "tls-peer-alt-names"
   NNG_OPT_PAIR1_POLY* = "pair1:polyamorous"
   NNG_OPT_PAIR1_TEST_INJECT_HEADER* = "pair1_test_inject_header"
-  NNG_OPT_RECVFD* = "recv-fd"
-  NNG_OPT_SENDFD* = "send-fd"
-  NNG_OPT_SUB_SUBSCRIBE* = "sub:subscribe"
-  NNG_OPT_SUB_UNSUBSCRIBE* = "sub:unsubscribe"
   NNG_OPT_SUB_PREFNEW* = "sub:prefnew"
   NNG_OPT_REQ_RESENDTIME* = "req:resend-time"
   NNG_OPT_REQ_RESENDTICK* = "req:resend-tick"
   NNG_OPT_SURVEYOR_SURVEYTIME* = "surveyor:survey-time"
   NNG_OPT_RECVMAXSZ* = "recv-size-max"
 
+  # Genuine NNG v2 options
+  NNG_OPT_IPC_PERMISSIONS* = "ipc:permissions"
+  NNG_OPT_IPC_OWNER* = "ipc:owner"
+  NNG_OPT_IPC_GROUP* = "ipc:group"
+  NNG_OPT_PEER_UID* = "ipc:peer-uid"
+  NNG_OPT_IPC_PEER_UID* = "ipc:peer-uid"
+  NNG_OPT_PEER_GID* = "ipc:peer-gid"
+  NNG_OPT_IPC_PEER_GID* = "ipc:peer-gid"
+  NNG_OPT_PEER_PID* = "ipc:peer-pid"
+  NNG_OPT_IPC_PEER_PID* = "ipc:peer-pid"
+  NNG_OPT_PEER_ZONEID* = "ipc:peer-zoneid"
+  NNG_OPT_IPC_PEER_ZONEID* = "ipc:peer-zoneid"
+  NNG_OPT_WS_HEADER* = "ws:header:"
+  NNG_OPT_WS_HEADER_NEXT* = "ws:hdr-next"
+  NNG_OPT_WS_HEADER_RESET* = "ws:hdr-reset"
+  NNG_OPT_WS_HEADER_KEY* = "ws:hdr-key"
+  NNG_OPT_WS_HEADER_VALUE* = "ws:hdr-val"
+  NNG_OPT_WS_REQUEST_URI* = "ws:request-uri"
+  NNG_OPT_WS_TREE* = "ws:tree"
+  NNG_OPT_WS_SENDMAXFRAME* = "ws:txframe-max"
+  NNG_OPT_WS_RECVMAXFRAME* = "ws:rxframe-max"
+  NNG_OPT_WS_PROTOCOL* = "ws:protocol"
+  NNG_OPT_WS_FOLLOW_REDIRECTS* = "ws:follow-redirects"
+  NNG_OPT_WS_SEND_TEXT* = "ws:send-text"
+  NNG_OPT_WS_RECV_TEXT* = "ws:recv-text"
+  NNG_OPT_SOCKET_FD* = "socket:fd"
+  NNG_OPT_LISTEN_FD* = "listen-fd"
+
 type
   OptionKind* = enum
     optKindBool
     optKindInt
+    optKindUint64
     optKindDuration # ms as int64
     optKindSize # byte sizes (uint64)
     optKindString
@@ -200,6 +210,7 @@ type
     case kind*: OptionKind
     of optKindBool: bVal*: bool
     of optKindInt: iVal*: int
+    of optKindUint64: u64Val*: uint64
     of optKindDuration: dVal*: int64
     of optKindSize: sVal*: uint64
     of optKindString: strVal*: string
@@ -228,6 +239,9 @@ proc initOptionValueDuration*(ms: int64): OptionValue =
 proc initOptionValueSize*(sz: uint64): OptionValue =
   OptionValue(kind: optKindSize, sVal: sz)
 
+proc initOptionValueUint64*(u: uint64): OptionValue =
+  OptionValue(kind: optKindUint64, u64Val: u)
+
 proc initOptionValue*(s: string): OptionValue =
   OptionValue(kind: optKindString, strVal: s)
 
@@ -250,25 +264,14 @@ proc initDefaultDescriptors() =
   if gOptionDescriptors.len > 0:
     return
   gOptionDescriptors = initTable[string, OptionDescriptor]()
-  registerOption(NNG_OPT_SOCKNAME, optKindString, optRw, {entSocket})
-  registerOption(NNG_OPT_RAW, optKindBool, optRo, {entSocket})
-  registerOption(NNG_OPT_PROTO, optKindInt, optRo, {entSocket})
-  registerOption(NNG_OPT_PROTONAME, optKindString, optRo, {entSocket})
-  registerOption(NNG_OPT_PEER, optKindInt, optRo, {entSocket})
-  registerOption(NNG_OPT_PEERNAME, optKindString, optRo, {entSocket})
   registerOption(NNG_OPT_RECVBUF, optKindInt, optRw, {entSocket, entContext})
   registerOption(NNG_OPT_SENDBUF, optKindInt, optRw, {entSocket, entContext})
   registerOption(NNG_OPT_RECVTIMEO, optKindDuration, optRw, {entSocket, entContext})
   registerOption(NNG_OPT_SENDTIMEO, optKindDuration, optRw, {entSocket, entContext})
-  registerOption(NNG_OPT_LOCADDR, optKindSockAddr, optRo, {entListener, entPipe})
-  registerOption(NNG_OPT_REMADDR, optKindSockAddr, optRo, {entPipe})
-  registerOption(NNG_OPT_URL, optKindString, optRo, {entDialer, entListener, entPipe})
   registerOption(NNG_OPT_MAXTTL, optKindInt, optRw, {entSocket})
   registerOption(NNG_OPT_RECONNMINT, optKindDuration, optRw, {entSocket, entDialer})
   registerOption(NNG_OPT_RECONNMAXT, optKindDuration, optRw, {entSocket, entDialer})
-  registerOption(NNG_OPT_TCP_BOUND_PORT, optKindInt, optRo, {entListener})
   registerOption(NNG_OPT_BOUND_PORT, optKindInt, optRo, {entListener})
-  registerOption("tcp:bound-port", optKindInt, optRo, {entListener})
   registerOption(NNG_OPT_UDP_COPY_MAX, optKindSize, optRw, {entDialer, entListener})
   registerOption(NNG_OPT_UDP_CONN_RETRY, optKindDuration, optRw, {entDialer})
   registerOption(
@@ -276,28 +279,16 @@ proc initDefaultDescriptors() =
   )
   registerOption(NNG_OPT_UDP_MAX_PEERS, optKindSize, optRw, {entListener})
   registerOption(NNG_OPT_DTLS_CONN_RATE, optKindSize, optRw, {entListener})
-  registerOption(NNG_OPT_RECVFD, optKindInt, optRo, {entSocket})
-  registerOption(NNG_OPT_SENDFD, optKindInt, optRo, {entSocket})
   registerOption(
     NNG_OPT_TCP_NODELAY, optKindBool, optRw, {entSocket, entDialer, entListener}
   )
   registerOption(
     NNG_OPT_TCP_KEEPALIVE, optKindBool, optRw, {entSocket, entDialer, entListener}
   )
-  registerOption(NNG_OPT_TLS_CONFIG, optKindPtr, optRw, {entDialer, entListener})
-  registerOption(NNG_OPT_TLS_AUTH_MODE, optKindInt, optRw, {entDialer, entListener})
-  registerOption(NNG_OPT_TLS_CA_FILE, optKindString, optRw, {entDialer, entListener})
-  registerOption(
-    NNG_OPT_TLS_CERT_KEY_FILE, optKindString, optRw, {entDialer, entListener}
-  )
-  registerOption(NNG_OPT_TLS_SERVER_NAME, optKindString, optRw, {entDialer})
   registerOption(NNG_OPT_TLS_VERIFIED, optKindBool, optRo, {entPipe})
   registerOption(NNG_OPT_TLS_PEER_CN, optKindString, optRo, {entPipe})
-  registerOption(NNG_OPT_TLS_PEER_ALT_NAMES, optKindString, optRo, {entPipe})
   registerOption(NNG_OPT_PAIR1_POLY, optKindBool, optRw, {entSocket})
   registerOption(NNG_OPT_PAIR1_TEST_INJECT_HEADER, optKindBool, optRw, {entSocket})
-  registerOption(NNG_OPT_SUB_SUBSCRIBE, optKindString, optWo, {entSocket, entContext})
-  registerOption(NNG_OPT_SUB_UNSUBSCRIBE, optKindString, optWo, {entSocket, entContext})
   registerOption(NNG_OPT_SUB_PREFNEW, optKindBool, optRw, {entSocket, entContext})
   registerOption(
     NNG_OPT_REQ_RESENDTIME, optKindDuration, optRw, {entSocket, entContext}
@@ -311,6 +302,38 @@ proc initDefaultDescriptors() =
   registerOption(
     NNG_OPT_RECVMAXSZ, optKindSize, optRw, {entSocket, entDialer, entListener}
   )
+
+  # Genuine NNG v2 options
+  registerOption(NNG_OPT_IPC_PERMISSIONS, optKindInt, optRw, {entDialer, entListener})
+  registerOption(NNG_OPT_IPC_OWNER, optKindString, optRw, {entListener})
+  registerOption(NNG_OPT_IPC_GROUP, optKindString, optRw, {entListener})
+  registerOption(NNG_OPT_PEER_UID, optKindUint64, optRo, {entPipe})
+  registerOption(NNG_OPT_PEER_GID, optKindUint64, optRo, {entPipe})
+  registerOption(NNG_OPT_PEER_PID, optKindUint64, optRo, {entPipe})
+  registerOption(NNG_OPT_PEER_ZONEID, optKindUint64, optRo, {entPipe})
+  registerOption(
+    NNG_OPT_WS_HEADER, optKindString, optRw, {entDialer, entListener, entPipe}
+  )
+  registerOption(NNG_OPT_WS_HEADER_NEXT, optKindBool, optRo, {entPipe})
+  registerOption(NNG_OPT_WS_HEADER_RESET, optKindBool, optWo, {entPipe})
+  registerOption(NNG_OPT_WS_HEADER_KEY, optKindString, optRo, {entPipe})
+  registerOption(NNG_OPT_WS_HEADER_VALUE, optKindString, optRo, {entPipe})
+  registerOption(NNG_OPT_WS_REQUEST_URI, optKindString, optRo, {entPipe})
+  registerOption(NNG_OPT_WS_TREE, optKindBool, optRw, {entListener})
+  registerOption(
+    NNG_OPT_WS_SENDMAXFRAME, optKindSize, optRw, {entDialer, entListener, entPipe}
+  )
+  registerOption(
+    NNG_OPT_WS_RECVMAXFRAME, optKindSize, optRw, {entDialer, entListener, entPipe}
+  )
+  registerOption(
+    NNG_OPT_WS_PROTOCOL, optKindString, optRw, {entDialer, entListener, entPipe}
+  )
+  registerOption(NNG_OPT_WS_FOLLOW_REDIRECTS, optKindBool, optRw, {entDialer})
+  registerOption(NNG_OPT_WS_SEND_TEXT, optKindBool, optRw, {entPipe})
+  registerOption(NNG_OPT_WS_RECV_TEXT, optKindBool, optRw, {entPipe})
+  registerOption(NNG_OPT_SOCKET_FD, optKindInt, optWo, {entDialer})
+  registerOption(NNG_OPT_LISTEN_FD, optKindInt, optWo, {entListener})
 
 initDefaultDescriptors()
 
@@ -338,7 +361,6 @@ proc newOptionStore*(target: OptionTarget): OptionStore =
     result.values[NNG_OPT_TCP_NODELAY] = initOptionValue(true)
   of entListener:
     result.values[NNG_OPT_TCP_NODELAY] = initOptionValue(true)
-    result.values[NNG_OPT_TCP_BOUND_PORT] = initOptionValue(0)
     result.values[NNG_OPT_BOUND_PORT] = initOptionValue(0)
   of entPipe:
     result.values[NNG_OPT_TLS_VERIFIED] = initOptionValue(false)
@@ -375,6 +397,9 @@ proc setMsInternal*(store: OptionStore, name: string, val: int64) =
 
 proc setSizeInternal*(store: OptionStore, name: string, val: uint64) =
   store.values[name] = initOptionValueSize(val)
+
+proc setUint64Internal*(store: OptionStore, name: string, val: uint64) =
+  store.values[name] = initOptionValueUint64(val)
 
 proc setStringInternal*(store: OptionStore, name: string, val: string) =
   store.values[name] = initOptionValue(val)
@@ -424,6 +449,16 @@ proc getSize*(store: OptionStore, name: string): uint64 =
   store.validateAccess(name, isSet = false, optKindSize)
   if name in store.values and store.values[name].kind == optKindSize:
     return store.values[name].sVal
+  raise newNngError(NNG_ENOENT, "Option " & name & " not set")
+
+proc setUint64*(store: OptionStore, name: string, val: uint64) =
+  store.validateAccess(name, isSet = true, optKindUint64)
+  store.values[name] = initOptionValueUint64(val)
+
+proc getUint64*(store: OptionStore, name: string): uint64 =
+  store.validateAccess(name, isSet = false, optKindUint64)
+  if name in store.values and store.values[name].kind == optKindUint64:
+    return store.values[name].u64Val
   raise newNngError(NNG_ENOENT, "Option " & name & " not set")
 
 proc setString*(store: OptionStore, name: string, val: string) =

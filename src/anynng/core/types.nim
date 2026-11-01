@@ -92,6 +92,7 @@ type
     tlsPeerCn*: string
     locAddr*: string
     remAddr*: string
+    schemeStr*: string
 
   PipeNotifyCb* = proc(pipe: Pipe, ev: PipeEvent) {.closure.}
 

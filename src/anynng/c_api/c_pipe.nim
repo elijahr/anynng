@@ -91,3 +91,180 @@ proc nng_pipe_notify*(
       cb(NngPipeObj(id: pid), cint(ev), arg),
   )
   return 0
+
+proc findPipe(id: uint32): Pipe =
+  if id in gPipes:
+    return gPipes[id]
+  for _, s in gSockets:
+    if not s.closed and PipeId(id) in s.pipes:
+      return s.pipes[PipeId(id)]
+  return nil
+
+proc nng_pipe_get_bool*(
+    p: NngPipeObj, name: cstring, val: ptr bool
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  try:
+    val[] = pipe.getBool($name)
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_pipe_get_int*(
+    p: NngPipeObj, name: cstring, val: ptr cint
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  return cint(NNG_ENOTSUP)
+
+proc nng_pipe_get_ms*(
+    p: NngPipeObj, name: cstring, val: ptr int32
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  return cint(NNG_ENOTSUP)
+
+proc nng_pipe_get_size*(
+    p: NngPipeObj, name: cstring, val: ptr csize_t
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  return cint(NNG_ENOTSUP)
+
+proc nng_pipe_get_uint64*(
+    p: NngPipeObj, name: cstring, val: ptr uint64
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  return cint(NNG_ENOTSUP)
+
+proc nng_pipe_get_string*(
+    p: NngPipeObj, name: cstring, val: ptr cstring
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  try:
+    let str = pipe.getString($name)
+    val[] = cstring(str)
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_pipe_get_strdup*(
+    p: NngPipeObj, name: cstring, val: ptr cstring
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or val == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  try:
+    let str = pipe.getString($name)
+    let cStr = cast[cstring](allocShared0(str.len + 1))
+    copyMem(cStr, cstring(str), str.len + 1)
+    val[] = cStr
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_pipe_get_strcpy*(
+    p: NngPipeObj, name: cstring, buf: cstring, bufsz: csize_t
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or buf == nil or bufsz == 0:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  try:
+    let str = pipe.getString($name)
+    let copyLen = min(str.len, int(bufsz) - 1)
+    if copyLen > 0:
+      copyMem(buf, cstring(str), copyLen)
+    cast[ptr UncheckedArray[char]](buf)[copyLen] = '\0'
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_pipe_get_strlen*(
+    p: NngPipeObj, name: cstring, szp: ptr csize_t
+): cint {.exportc, dynlib, cdecl.} =
+  if name == nil or szp == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  try:
+    let str = pipe.getString($name)
+    szp[] = csize_t(str.len)
+    return 0
+  except CatchableError as e:
+    return toCError(e)
+
+proc nng_pipe_get_scheme*(
+    p: NngPipeObj, schemep: ptr cstring
+): cint {.exportc, dynlib, cdecl.} =
+  if schemep == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ECLOSED)
+  let sc = pipe.scheme()
+  schemep[] = cstring(sc)
+  return 0
+
+proc nng_pipe_self_addr*(
+    p: NngPipeObj, sa: ptr NngSockaddr
+): cint {.exportc, dynlib, cdecl.} =
+  if sa == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ENOENT)
+  zeroMem(sa, sizeof(NngSockaddr))
+  sa.sa_family = 1 # NNG_AF_INPROC
+  let addrStr = pipe.selfAddr()
+  if addrStr.len > 0:
+    copyMem(addr sa.sa_pad[0], cstring(addrStr), min(addrStr.len, 127))
+  return 0
+
+proc nng_pipe_peer_addr*(
+    p: NngPipeObj, sa: ptr NngSockaddr
+): cint {.exportc, dynlib, cdecl.} =
+  if sa == nil:
+    return cint(NNG_EINVAL)
+  let pipe = findPipe(p.id)
+  if pipe == nil:
+    return cint(NNG_ENOENT)
+  zeroMem(sa, sizeof(NngSockaddr))
+  sa.sa_family = 1 # NNG_AF_INPROC
+  let addrStr = pipe.peerAddr()
+  if addrStr.len > 0:
+    copyMem(addr sa.sa_pad[0], cstring(addrStr), min(addrStr.len, 127))
+  return 0
+
+proc nng_pipe_peer_cert*(
+    p: NngPipeObj, certp: ptr pointer
+): cint {.exportc, dynlib, cdecl.} =
+  if certp == nil:
+    return cint(NNG_EINVAL)
+  certp[] = nil
+  return cint(NNG_ENOTSUP)

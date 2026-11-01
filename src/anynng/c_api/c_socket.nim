@@ -9,7 +9,7 @@ proc regSocket(s: Socket): NngSocketObj =
   gSockets[id] = s
   result.id = id
 
-proc nng_close*(s: NngSocketObj): cint {.exportc, dynlib, cdecl.} =
+proc nng_socket_close*(s: NngSocketObj): cint {.exportc, dynlib, cdecl.} =
   if s.id in gClosedSockets or s.id notin gSockets:
     return cint(NNG_ECLOSED)
   if s.id in gDeviceSockets:
@@ -32,9 +32,6 @@ proc nng_close*(s: NngSocketObj): cint {.exportc, dynlib, cdecl.} =
     return 0
   except CatchableError as e:
     return toCError(e)
-
-proc nng_socket_close*(s: NngSocketObj): cint {.exportc, dynlib, cdecl.} =
-  nng_close(s)
 
 proc nng_socket_id*(s: NngSocketObj): cint {.exportc, dynlib, cdecl.} =
   if s.id == 0 or s.id notin gSockets or s.id in gClosedSockets:

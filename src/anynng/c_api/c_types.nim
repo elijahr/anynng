@@ -69,6 +69,12 @@ type
 
   NngLogger* = proc(level: cint, facility: cint, msgid: cstring, msg: cstring) {.cdecl.}
 
+  NngSockaddrStorage* {.bycopy.} = object
+    sa_family*: uint16
+    sa_pad*: array[16, uint64]
+
+  NngSockaddr* = NngSockaddrStorage
+
 var gHandleMtx: ptr Pthread_mutex = nil
 
 proc getHandleMtx(): ptr Pthread_mutex =

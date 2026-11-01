@@ -90,6 +90,14 @@ when not defined(js):
         sock.close()
 
     let pipe = newPipe(pid, proto, sendCb, closeCb)
+    try:
+      let (selfHost, selfPort) = sock.getLocalAddr()
+      let (peerHost, peerPort) = sock.getPeerAddr()
+      pipe.locAddr = selfHost & ":" & $selfPort
+      pipe.remAddr = peerHost & ":" & $peerPort
+    except CatchableError:
+      discard
+    pipe.schemeStr = "tcp"
 
     asyncCheck readStreamLoop(sock, pid, onFrame, onClose)
     return pipe
@@ -163,6 +171,14 @@ when not defined(js):
               clientSock.close()
 
           let pipe = newPipe(pid, proto, sendCb, closeCb)
+          try:
+            let (selfHost, selfPort) = clientSock.getLocalAddr()
+            let (peerHost, peerPort) = clientSock.getPeerAddr()
+            pipe.locAddr = selfHost & ":" & $selfPort
+            pipe.remAddr = peerHost & ":" & $peerPort
+          except CatchableError:
+            discard
+          pipe.schemeStr = "tcp"
 
           if onPipeAdded != nil:
             onPipeAdded(pipe)

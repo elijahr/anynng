@@ -166,7 +166,7 @@ proc nng_sleep_aio*(ms: int64, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
   if aio notin gPendingSleepAios:
     gPendingSleepAios.add(aio)
 
-proc nng_send_aio*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+proc nng_socket_send*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
   if aio == nil:
     return
   if aio.stopped:
@@ -209,7 +209,7 @@ proc nng_send_aio*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl
   aio.msg = nil
   nng_aio_finish(aio, res)
 
-proc nng_recv_aio*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+proc nng_socket_recv*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
   if aio != nil and aio.stopped:
     nng_aio_finish(aio, cint(NNG_ESTOPPED))
     return
@@ -256,12 +256,6 @@ proc nng_recv_aio*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl
         m.pipeId = msg.pipeId
         nng_aio_set_msg(aio, m)
       nng_aio_finish(aio, cint(res))
-
-proc nng_socket_send*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
-  nng_send_aio(s, aio)
-
-proc nng_socket_recv*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
-  nng_recv_aio(s, aio)
 
 proc nng_ctx_send*(c: NngCtxObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
   if aio != nil and aio.stopped:
