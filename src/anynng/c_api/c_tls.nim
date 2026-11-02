@@ -3,7 +3,7 @@
 # ----------------------------------------------------------------------
 
 proc nng_tls_config_alloc*(
-    cfgp: ptr pointer, mode: cint
+    cfgp: ptr ptr NngTlsConfigObj, mode: cint
 ): cint {.exportc, dynlib, cdecl.} =
   if cfgp == nil:
     return cint(NNG_EINVAL)
@@ -12,18 +12,18 @@ proc nng_tls_config_alloc*(
   let id = gNextTlsCfgId
   inc gNextTlsCfgId
   gTlsConfigs[id] = cfg
-  cfgp[] = cast[pointer](cfg)
+  cfgp[] = cast[ptr NngTlsConfigObj](cfg)
   return 0
 
-proc nng_tls_config_free*(cfg: pointer) {.exportc, dynlib, cdecl.} =
+proc nng_tls_config_free*(cfg: ptr NngTlsConfigObj) {.exportc, dynlib, cdecl.} =
   if cfg != nil:
     for id, c in gTlsConfigs:
-      if cast[pointer](c) == cfg:
+      if cast[ptr NngTlsConfigObj](c) == cfg:
         gTlsConfigs.del(id)
         break
 
 proc nng_tls_config_server_name*(
-    cfg: pointer, name: cstring
+    cfg: ptr NngTlsConfigObj, name: cstring
 ): cint {.exportc, dynlib, cdecl.} =
   if cfg == nil or name == nil:
     return cint(NNG_EINVAL)
@@ -32,7 +32,7 @@ proc nng_tls_config_server_name*(
   return 0
 
 proc nng_tls_config_auth_mode*(
-    cfg: pointer, mode: cint
+    cfg: ptr NngTlsConfigObj, mode: cint
 ): cint {.exportc, dynlib, cdecl.} =
   if cfg == nil:
     return cint(NNG_EINVAL)
@@ -51,7 +51,7 @@ proc nng_tls_config_auth_mode*(
   return 0
 
 proc nng_tls_config_ca_chain*(
-    cfg: pointer, chain: cstring, crl: cstring
+    cfg: ptr NngTlsConfigObj, chain: cstring, crl: cstring
 ): cint {.exportc, dynlib, cdecl.} =
   if cfg == nil or chain == nil:
     return cint(NNG_EINVAL)
@@ -60,7 +60,7 @@ proc nng_tls_config_ca_chain*(
   return 0
 
 proc nng_tls_config_ca_file*(
-    cfg: pointer, path: cstring
+    cfg: ptr NngTlsConfigObj, path: cstring
 ): cint {.exportc, dynlib, cdecl.} =
   if cfg == nil or path == nil:
     return cint(NNG_EINVAL)
@@ -69,7 +69,7 @@ proc nng_tls_config_ca_file*(
   return 0
 
 proc nng_tls_config_own_cert*(
-    cfg: pointer, cert: cstring, key: cstring, pass: cstring
+    cfg: ptr NngTlsConfigObj, cert: cstring, key: cstring, pass: cstring
 ): cint {.exportc, dynlib, cdecl.} =
   if cfg == nil or cert == nil or key == nil:
     return cint(NNG_EINVAL)
@@ -78,7 +78,7 @@ proc nng_tls_config_own_cert*(
   return 0
 
 proc nng_tls_config_cert_key_file*(
-    cfg: pointer, cert: cstring, key: cstring
+    cfg: ptr NngTlsConfigObj, cert: cstring, key: cstring
 ): cint {.exportc, dynlib, cdecl.} =
   if cfg == nil or cert == nil or key == nil:
     return cint(NNG_EINVAL)
@@ -87,7 +87,7 @@ proc nng_tls_config_cert_key_file*(
   return 0
 
 proc nng_tls_config_version*(
-    cfg: pointer, minV: cint, maxV: cint
+    cfg: ptr NngTlsConfigObj, minV: cint, maxV: cint
 ): cint {.exportc, dynlib, cdecl.} =
   if cfg == nil:
     return cint(NNG_EINVAL)
@@ -105,7 +105,7 @@ proc nng_tls_config_version*(
   c.setVersion(minTls, maxTls)
   return 0
 
-proc nng_tls_config_hold*(cfg: pointer) {.exportc, dynlib, cdecl.} =
+proc nng_tls_config_hold*(cfg: ptr NngTlsConfigObj) {.exportc, dynlib, cdecl.} =
   discard
 
 proc nng_tls_engine_name*(): cstring {.exportc, dynlib, cdecl.} =

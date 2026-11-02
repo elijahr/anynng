@@ -22,3 +22,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - feat: upgrade C-ABI and protocol engines to nanomsg/nng v2.1.0 compatibility with 18/18 upstream NUTS protocol test suites passing and per-suite execution timeout
 - refactor: decompose monolithic src/anynng.nim and src/anynng/c_api.nim into single-responsibility domain submodules
 - refactor: purge all NNG v1 legacy symbols and wire pure NNG v2.1.0 APIs & upstream libnng interop
+- feat(abi): integrate HeaderKit v2 pipeline and align C-ABI signatures against upstream NNG v2.1.0 (pyproject.toml, headerkit.toml with diff/cffi/pyi targets, typed pointer parameter exports, duration width alignment, zero mangled parameter suffixes via NimJsonDocEnricher, and just verify-abi test target)

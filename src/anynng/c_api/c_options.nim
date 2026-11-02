@@ -348,18 +348,18 @@ proc nng_dialer_set_ms*(
     return toCError(e)
 
 proc nng_dialer_get_tls*(
-    d: NngDialerObj, cfgp: ptr pointer
+    d: NngDialerObj, cfgp: ptr ptr NngTlsConfigObj
 ): cint {.exportc, dynlib, cdecl.} =
   if d.id notin gDialers or cfgp == nil:
     return cint(NNG_EINVAL)
   let dialer = gDialers[d.id]
   if dialer.tlsCfg == nil:
     return cint(NNG_ENOENT)
-  cfgp[] = cast[pointer](dialer.tlsCfg)
+  cfgp[] = cast[ptr NngTlsConfigObj](dialer.tlsCfg)
   return 0
 
 proc nng_dialer_set_tls*(
-    d: NngDialerObj, cfg: pointer
+    d: NngDialerObj, cfg: ptr NngTlsConfigObj
 ): cint {.exportc, dynlib, cdecl.} =
   if d.id notin gDialers:
     return cint(NNG_EINVAL)
@@ -368,7 +368,7 @@ proc nng_dialer_set_tls*(
     dialer.setTls(nil)
     return 0
   for _, c in gTlsConfigs:
-    if cast[pointer](c) == cfg:
+    if cast[ptr NngTlsConfigObj](c) == cfg:
       dialer.setTls(c)
       return 0
   dialer.setTls(cast[TlsConfig](cfg))
@@ -523,18 +523,18 @@ proc nng_listener_set_ms*(
     return toCError(e)
 
 proc nng_listener_get_tls*(
-    l: NngListenerObj, cfgp: ptr pointer
+    l: NngListenerObj, cfgp: ptr ptr NngTlsConfigObj
 ): cint {.exportc, dynlib, cdecl.} =
   if l.id notin gListeners or cfgp == nil:
     return cint(NNG_EINVAL)
   let listener = gListeners[l.id]
   if listener.tlsCfg == nil:
     return cint(NNG_ENOENT)
-  cfgp[] = cast[pointer](listener.tlsCfg)
+  cfgp[] = cast[ptr NngTlsConfigObj](listener.tlsCfg)
   return 0
 
 proc nng_listener_set_tls*(
-    l: NngListenerObj, cfg: pointer
+    l: NngListenerObj, cfg: ptr NngTlsConfigObj
 ): cint {.exportc, dynlib, cdecl.} =
   if l.id notin gListeners:
     return cint(NNG_EINVAL)
@@ -543,7 +543,7 @@ proc nng_listener_set_tls*(
     listener.setTls(nil)
     return 0
   for _, c in gTlsConfigs:
-    if cast[pointer](c) == cfg:
+    if cast[ptr NngTlsConfigObj](c) == cfg:
       listener.setTls(c)
       return 0
   listener.setTls(cast[TlsConfig](cfg))

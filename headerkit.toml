@@ -1,0 +1,21 @@
+backend = "tree-sitter"
+headers = ["dist/nimcache/anynng.h"]
+transforms = [
+    "nim_cleanup",
+    { name = "nim_jsondoc", nim_source_path = "src/anynng/c_api.nim" },
+]
+
+[[targets]]
+name = "diff"
+writer = "diff"
+output = "dist/abi_diff.json"
+
+[[targets]]
+name = "cffi"
+writer = "cffi"
+output = "dist/anynng_cffi.h"
+
+[[targets]]
+name = "pyi"
+writer = "pyi"
+output = "dist/anynng.pyi"

@@ -1,0 +1,8 @@
+[project]
+name = "anynng"
+version = "0.2.0"
+description = "Pure-Nim high-performance cross-platform NNG v2.1.0 implementation"
+requires-python = ">=3.11"
+dependencies = [
+    "headerkit @ git+https://github.com/axiomantic/headerkit.git@feat/headerkit-roundtable-v2",
+]

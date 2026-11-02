@@ -25,6 +25,10 @@ test-ts:
 test-nng-spec:
     bash scripts/run_upstream_nng_tests.sh
 
+# HeaderKit v2 C-ABI Signature & Pipeline Verification
+verify-abi:
+    PYTHONPATH=/Users/eek/Development/headerkit /Users/eek/Development/headerkit/.venv/bin/python scripts/verify_headerkit_abi.py
+
 # 3. Linter Execution
 lint:
     @just lint-nim

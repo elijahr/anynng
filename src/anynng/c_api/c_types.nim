@@ -1,25 +1,25 @@
 type
-  NngSocketObj* = object
+  NngSocketObj* {.exportc: "nng_socket_s".} = object
     id*: uint32
 
-  NngDialerObj* = object
+  NngDialerObj* {.exportc: "nng_dialer_s".} = object
     id*: uint32
 
-  NngListenerObj* = object
+  NngListenerObj* {.exportc: "nng_listener_s".} = object
     id*: uint32
 
-  NngCtxObj* = object
+  NngCtxObj* {.exportc: "nng_ctx_s".} = object
     id*: uint32
 
-  NngPipeObj* = object
+  NngPipeObj* {.exportc: "nng_pipe_s".} = object
     id*: uint32
 
-  NngMsgObj* = object
+  NngMsgObj* {.exportc: "nng_msg".} = object
     header*: seq[byte]
     body*: seq[byte]
     pipeId*: PipeId
 
-  NngAioObj* = object
+  NngAioObj* {.exportc: "nng_aio".} = object
     cb*: proc(arg: pointer) {.cdecl.}
     arg*: pointer
     msg*: ptr NngMsgObj
@@ -40,19 +40,19 @@ type
     cb: NngPipeNotifyCbCdecl
     arg: pointer
 
-  NngMtxObj* = object
+  NngMtxObj* {.exportc: "nng_mtx".} = object
     m*: ptr Pthread_mutex
 
-  NngCvObj* = object
+  NngCvObj* {.exportc: "nng_cv".} = object
     c*: ptr Pthread_cond
     mtx*: ptr Pthread_mutex
 
-  NngThreadObj = object
-    fn: proc(arg: pointer) {.cdecl.}
-    arg: pointer
-    thr: Thread[pointer]
+  NngThreadObj* {.exportc: "nng_thread".} = object
+    fn*: proc(arg: pointer) {.cdecl.}
+    arg*: pointer
+    thr*: Thread[pointer]
 
-  NngUrlObj* = object
+  NngUrlObj* {.exportc: "nng_url".} = object
     u_scheme*: cstring
     u_userinfo*: cstring
     u_hostname*: cstring
@@ -64,12 +64,21 @@ type
     u_bufsz*: csize_t
     u_static*: array[128, char]
 
-  NngUdpObj* = object
+  NngUdpObj* {.exportc: "nng_udp".} = object
     fd*: cint
+
+  NngInitParamsObj* {.exportc: "nng_init_params".} = object
+  NngTlsConfigObj* {.exportc: "nng_tls_config".} = object
+  NngTlsCertObj* {.exportc: "nng_tls_cert_s".} = object
+  NngIdMapObj* {.exportc: "nng_id_map_s".} = object
+  NngStatObj* {.exportc: "nng_stat".} = object
+  NngStreamObj* {.exportc: "nng_stream".} = object
+  NngStreamDialerObj* {.exportc: "nng_stream_dialer".} = object
+  NngStreamListenerObj* {.exportc: "nng_stream_listener".} = object
 
   NngLogger* = proc(level: cint, facility: cint, msgid: cstring, msg: cstring) {.cdecl.}
 
-  NngSockaddrStorage* {.bycopy.} = object
+  NngSockaddrStorage* {.exportc: "nng_sockaddr", bycopy.} = object
     sa_family*: uint16
     sa_pad*: array[16, uint64]
 

@@ -131,9 +131,11 @@ proc nng_aio_result*(aio: ptr NngAioObj): cint {.exportc, dynlib, cdecl.} =
     return cint(NNG_EINVAL)
   return aio.err
 
-proc nng_aio_set_timeout*(aio: ptr NngAioObj, ms: int64) {.exportc, dynlib, cdecl.} =
+proc nng_aio_set_timeout*(
+    aio: ptr NngAioObj, timeout: cint
+) {.exportc, dynlib, cdecl.} =
   if aio != nil:
-    aio.timeout = ms
+    aio.timeout = int64(timeout)
 
 proc nng_aio_set_msg*(
     aio: ptr NngAioObj, msg: ptr NngMsgObj
@@ -153,7 +155,7 @@ proc nng_aio_finish*(aio: ptr NngAioObj, err: cint) {.exportc, dynlib, cdecl.} =
     if aio.cb != nil:
       aio.cb(aio.arg)
 
-proc nng_sleep_aio*(ms: int64, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+proc nng_sleep_aio*(ms: cint, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
   if aio == nil:
     return
   if aio.stopped:
@@ -162,7 +164,7 @@ proc nng_sleep_aio*(ms: int64, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
   aio.finished = false
   aio.err = 0
   let now = getMonoTime().ticks div 1_000_000
-  aio.wakeTime = now + max(0'i64, ms)
+  aio.wakeTime = now + max(0'i64, int64(ms))
   if aio notin gPendingSleepAios:
     gPendingSleepAios.add(aio)
 

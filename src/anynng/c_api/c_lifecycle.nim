@@ -5,7 +5,7 @@
 proc nng_version*(): cstring {.exportc, dynlib, cdecl.} =
   return "2.1.0-anynng"
 
-proc nng_init*(params: pointer): cint {.exportc, dynlib, cdecl.} =
+proc nng_init*(params: ptr NngInitParamsObj): cint {.exportc, dynlib, cdecl.} =
   return 0
 
 proc nng_alloc*(sz: csize_t): pointer {.exportc, dynlib, cdecl.} =
@@ -88,7 +88,7 @@ proc nng_strfree*(str: cstring) {.exportc, dynlib, cdecl.} =
 proc nng_clock*(): uint64 {.exportc, dynlib, cdecl.} =
   return uint64(getMonoTime().ticks div 1_000_000)
 
-proc nng_msleep*(ms: uint32) {.exportc, dynlib, cdecl.} =
+proc nng_msleep*(ms: cint) {.exportc, dynlib, cdecl.} =
   let start = getMonoTime().ticks div 1_000_000
   let target = int64(ms)
   while true:

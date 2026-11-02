@@ -262,7 +262,7 @@ proc nng_pipe_peer_addr*(
   return 0
 
 proc nng_pipe_peer_cert*(
-    p: NngPipeObj, certp: ptr pointer
+    p: NngPipeObj, certp: ptr ptr NngTlsCertObj
 ): cint {.exportc, dynlib, cdecl.} =
   if certp == nil:
     return cint(NNG_EINVAL)
