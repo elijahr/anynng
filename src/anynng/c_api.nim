@@ -24,3 +24,4 @@ when not defined(js):
   include ./c_api/c_device
   include ./c_api/c_tls
   include ./c_api/c_sync
+  include ./c_api/c_stats

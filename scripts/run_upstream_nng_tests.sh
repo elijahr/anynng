@@ -75,7 +75,6 @@ for t in "${TEST_FILES[@]}"; do
 
     # Compile
     clang -O2 $NUTS_INC -Ldist -lanynng -Wl,-rpath,@loader_path/../.. -Wl,-rpath,dist \
-        tests/upstream_shim/nuts_stat_shim.c \
         "$NNG_DIR/src/testing/marry.c" \
         "$NNG_DIR/src/testing/util.c" \
         "$t" -o "$bin_path"
