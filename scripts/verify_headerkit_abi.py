@@ -18,7 +18,35 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-HEADERKIT_DIR = Path("/Users/eek/Development/headerkit")
+
+
+def resolve_headerkit_dir() -> Path:
+    if "HEADERKIT_DIR" in os.environ:
+        return Path(os.environ["HEADERKIT_DIR"]).resolve()
+    sibling = (REPO_ROOT.parent / "headerkit").resolve()
+    if sibling.is_dir():
+        return sibling
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0:
+            common_dir = Path(res.stdout.strip())
+            repo = common_dir if common_dir.is_absolute() else (REPO_ROOT / common_dir).resolve()
+            canonical_root = repo.parent if repo.name == ".git" else repo
+            candidate = (canonical_root.parent / "headerkit").resolve()
+            if candidate.is_dir():
+                return candidate
+    except Exception:
+        pass
+    return sibling
+
+
+HEADERKIT_DIR = resolve_headerkit_dir()
 
 if HEADERKIT_DIR.exists() and str(HEADERKIT_DIR) not in sys.path:
     sys.path.insert(0, str(HEADERKIT_DIR))
@@ -37,31 +65,6 @@ except ImportError as exc:
     print(f"Error importing HeaderKit v2: {exc}", file=sys.stderr)
     print(f"PYTHONPATH: {sys.path}", file=sys.stderr)
     sys.exit(1)
-
-
-def ensure_canonical_handle_typedefs(header_file: Path):
-    """Ensure canonical NNG handle typedef aliases (nng_socket, nng_dialer, etc.) are present."""
-    if not header_file.is_file():
-        return
-    content = header_file.read_text(encoding="utf-8")
-    typedefs = """
-/* Canonical NNG handle typedef aliases */
-#ifndef _NNG_HANDLE_TYPEDEFS_
-#define _NNG_HANDLE_TYPEDEFS_
-typedef struct nng_socket_s nng_socket;
-typedef struct nng_dialer_s nng_dialer;
-typedef struct nng_listener_s nng_listener;
-typedef struct nng_ctx_s nng_ctx;
-typedef struct nng_pipe_s nng_pipe;
-#endif
-"""
-    if "typedef struct nng_socket_s nng_socket;" not in content:
-        idx = content.rfind("#endif")
-        if idx != -1:
-            content = content[:idx] + typedefs + "\n" + content[idx:]
-        else:
-            content = content + typedefs
-        header_file.write_text(content, encoding="utf-8")
 
 
 def build_nim_header() -> Path:
@@ -93,9 +96,6 @@ def build_nim_header() -> Path:
         print(f"Error: expected header not found at {header_path}", file=sys.stderr)
         sys.exit(1)
 
-    ensure_canonical_handle_typedefs(header_path)
-    ensure_canonical_handle_typedefs(REPO_ROOT / "dist" / "include" / "anynng.h")
-
     print(f"      Generated header: {header_path} ({header_path.stat().st_size} bytes)")
     return header_path
 
@@ -105,11 +105,12 @@ def verify_transforms_and_parameter_names(header_path: Path):
     print("[2/5] Parsing C header with Libclang & enriching from Nim AST...")
     lc = LibclangBackend()
     code = header_path.read_text(encoding="utf-8")
-    include_dirs = ["/Users/eek/.local/share/mise/installs/nim/2.2.12/lib"]
-    raw_unit = lc.parse(code, str(header_path), include_dirs=include_dirs)
+    cleanup = NimCleanupTransform()
+    inc_dirs, extra_args, backend_opts = cleanup.prepare_parse(code, str(header_path), [], [])
+    raw_unit = lc.parse(code, str(header_path), include_dirs=inc_dirs, extra_args=extra_args, **backend_opts)
 
     root_nim = REPO_ROOT / "src" / "anynng" / "c_api.nim"
-    cleaned = raw_unit >> NimCleanupTransform()
+    cleaned = raw_unit >> cleanup
     enricher = NimJsonDocEnricher(nim_source_path=root_nim)
     enriched = cleaned >> enricher
 
@@ -191,14 +192,29 @@ def verify_abi_signature_alignment(target_unit):
     upstream_inc = REPO_ROOT / ".cache" / "nng-upstream" / "include"
 
     if not upstream_nng.is_file():
-        # Fallback to canonical repo cache if not in strand
-        canonical_upstream = Path("/Users/eek/Development/anynng/.cache/nng-upstream/include/nng/nng.h")
-        if canonical_upstream.is_file():
-            upstream_nng = canonical_upstream
-            upstream_inc = Path("/Users/eek/Development/anynng/.cache/nng-upstream/include")
-        else:
-            print(f"FAIL: Upstream nng.h not found at {upstream_nng}", file=sys.stderr)
-            sys.exit(1)
+        # Fallback to canonical repo cache if running in a git worktree or strand
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--git-common-dir"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0:
+                common_dir = Path(res.stdout.strip())
+                repo = common_dir if common_dir.is_absolute() else (REPO_ROOT / common_dir).resolve()
+                canonical_root = repo.parent if repo.name == ".git" else repo
+                candidate = canonical_root / ".cache" / "nng-upstream" / "include" / "nng" / "nng.h"
+                if candidate.is_file():
+                    upstream_nng = candidate
+                    upstream_inc = candidate.parent.parent
+        except Exception:
+            pass
+
+    if not upstream_nng.is_file():
+        print(f"FAIL: Upstream nng.h not found at {upstream_nng}", file=sys.stderr)
+        sys.exit(1)
 
     lc = LibclangBackend()
     baseline = lc.parse(
