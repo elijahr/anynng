@@ -148,6 +148,20 @@ proc nng_aio_get_msg*(aio: ptr NngAioObj): ptr NngMsgObj {.exportc, dynlib, cdec
     return nil
   result = aio.msg
 
+proc nng_aio_set_iov*(
+    aio: ptr NngAioObj, niov: cuint, iov: ptr NngIov
+): cint {.exportc, dynlib, cdecl.} =
+  if aio == nil:
+    return cint(NNG_EINVAL)
+  aio.iov = iov
+  aio.niov = niov
+  return 0
+
+proc nng_aio_reset*(aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
+  if aio != nil:
+    aio.finished = false
+    aio.err = 0
+
 proc nng_aio_finish*(aio: ptr NngAioObj, err: cint) {.exportc, dynlib, cdecl.} =
   if aio != nil:
     aio.err = err
@@ -252,11 +266,11 @@ proc nng_socket_recv*(s: NngSocketObj, aio: ptr NngAioObj) {.exportc, dynlib, cd
     aio.err = 0
     sock.pendingRecvCb = proc(res: int, msg: SpMsg) =
       if res == 0:
-        let m = createShared(NngMsgObj)
+        let m = createShared(NngMsgImpl)
         m.header = msg.header
         m.body = msg.body
         m.pipeId = msg.pipeId
-        nng_aio_set_msg(aio, m)
+        nng_aio_set_msg(aio, cast[ptr NngMsgObj](m))
       nng_aio_finish(aio, cint(res))
 
 proc nng_ctx_send*(c: NngCtxObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} =
@@ -375,9 +389,9 @@ proc nng_ctx_recv*(c: NngCtxObj, aio: ptr NngAioObj) {.exportc, dynlib, cdecl.} 
     aio.startTime = getMonoTime().ticks div 1_000_000
     ctx.pendingRecvCb = proc(res: int, msg: SpMsg) =
       if res == 0:
-        let m = createShared(NngMsgObj)
+        let m = createShared(NngMsgImpl)
         m.header = msg.header
         m.body = msg.body
         m.pipeId = msg.pipeId
-        nng_aio_set_msg(aio, m)
+        nng_aio_set_msg(aio, cast[ptr NngMsgObj](m))
       nng_aio_finish(aio, cint(res))

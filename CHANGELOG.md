@@ -23,3 +23,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - refactor: decompose monolithic src/anynng.nim and src/anynng/c_api.nim into single-responsibility domain submodules
 - refactor: purge all NNG v1 legacy symbols and wire pure NNG v2.1.0 APIs & upstream libnng interop
 - feat(abi): integrate HeaderKit v2 pipeline and align C-ABI signatures against upstream NNG v2.1.0 (pyproject.toml, headerkit.toml with diff/cffi/pyi targets, typed pointer parameter exports, duration width alignment, zero mangled parameter suffixes via NimJsonDocEnricher, and just verify-abi test target)
+- fix(cabi): align nng_sockaddr union layout & sub-structs, canonical handle typedefs, expanded nng_init_params, nng_iov / nng_aio_set_iov, purge internal seq[byte] leakage from public C headers, and update HeaderKit ABI verifier with holistic struct/union layout coverage (Task task-anynng-shard4-abi-remediation)

@@ -1,23 +1,29 @@
 type
-  NngSocketObj* {.exportc: "nng_socket_s".} = object
+  NngSocketObj* {.exportc: "nng_socket_s", bycopy.} = object
     id*: uint32
 
-  NngDialerObj* {.exportc: "nng_dialer_s".} = object
+  NngDialerObj* {.exportc: "nng_dialer_s", bycopy.} = object
     id*: uint32
 
-  NngListenerObj* {.exportc: "nng_listener_s".} = object
+  NngListenerObj* {.exportc: "nng_listener_s", bycopy.} = object
     id*: uint32
 
-  NngCtxObj* {.exportc: "nng_ctx_s".} = object
+  NngCtxObj* {.exportc: "nng_ctx_s", bycopy.} = object
     id*: uint32
 
-  NngPipeObj* {.exportc: "nng_pipe_s".} = object
+  NngPipeObj* {.exportc: "nng_pipe_s", bycopy.} = object
     id*: uint32
 
   NngMsgObj* {.exportc: "nng_msg".} = object
+
+  NngMsgImpl* = object
     header*: seq[byte]
     body*: seq[byte]
     pipeId*: PipeId
+
+  NngIov* {.exportc: "nng_iov", bycopy.} = object
+    iov_buf*: pointer
+    iov_len*: csize_t
 
   NngAioObj* {.exportc: "nng_aio".} = object
     cb*: proc(arg: pointer) {.cdecl.}
@@ -33,6 +39,8 @@ type
     skipCbPtr*: ptr bool
     wakeTime*: int64
     devS1*, devS2*: uint32
+    iov*: ptr NngIov
+    niov*: cuint
 
   NngPipeNotifyCbCdecl* = proc(pipe: NngPipeObj, ev: cint, arg: pointer) {.cdecl.}
 
@@ -67,7 +75,18 @@ type
   NngUdpObj* {.exportc: "nng_udp".} = object
     fd*: cint
 
-  NngInitParamsObj* {.exportc: "nng_init_params".} = object
+  NngInitParamsObj* {.exportc: "nng_init_params", bycopy.} = object
+    num_task_threads*: int16
+    max_task_threads*: int16
+    num_expire_threads*: int16
+    max_expire_threads*: int16
+    num_poller_threads*: int16
+    max_poller_threads*: int16
+    num_resolver_threads*: int16
+    malloc_fn*: proc(sz: csize_t): pointer {.cdecl.}
+    calloc_fn*: proc(num: csize_t, sz: csize_t): pointer {.cdecl.}
+    free_fn*: proc(p: pointer, sz: csize_t) {.cdecl.}
+
   NngTlsConfigObj* {.exportc: "nng_tls_config".} = object
   NngTlsCertObj* {.exportc: "nng_tls_cert_s".} = object
   NngIdMapObj* {.exportc: "nng_id_map_s".} = object
@@ -78,11 +97,57 @@ type
 
   NngLogger* = proc(level: cint, facility: cint, msgid: cstring, msg: cstring) {.cdecl.}
 
-  NngSockaddrStorage* {.exportc: "nng_sockaddr", bycopy.} = object
+  NngSockaddrInproc* {.exportc: "nng_sockaddr_inproc", bycopy.} = object
+    sa_family*: uint16
+    sa_name*: array[128, char]
+
+  NngSockaddrPath* {.exportc: "nng_sockaddr_path", bycopy.} = object
+    sa_family*: uint16
+    sa_path*: array[128, char]
+
+  NngSockaddrIpc* {.exportc: "nng_sockaddr_ipc", bycopy.} = object
+    sa_family*: uint16
+    sa_path*: array[128, char]
+
+  NngSockaddrIn6* {.exportc: "nng_sockaddr_in6", bycopy.} = object
+    sa_family*: uint16
+    sa_port*: uint16
+    sa_scope*: uint32
+    sa_addr*: array[16, uint8]
+
+  NngSockaddrIn* {.exportc: "nng_sockaddr_in", bycopy.} = object
+    sa_family*: uint16
+    sa_port*: uint16
+    sa_addr*: uint32
+
+  NngSockaddrAbstract* {.exportc: "nng_sockaddr_abstract", bycopy.} = object
+    sa_family*: uint16
+    sa_len*: uint16
+    sa_name*: array[107, uint8]
+
+  NngSockaddrStorage* {.exportc: "nng_sockaddr_storage", bycopy.} = object
     sa_family*: uint16
     sa_pad*: array[16, uint64]
 
-  NngSockaddr* = NngSockaddrStorage
+  NngSockaddr* {.exportc: "nng_sockaddr", union, bycopy.} = object
+    s_family*: uint16
+    s_ipc*: NngSockaddrIpc
+    s_inproc*: NngSockaddrInproc
+    s_in6*: NngSockaddrIn6
+    s_in*: NngSockaddrIn
+    s_abstract*: NngSockaddrAbstract
+    s_storage*: NngSockaddrStorage
+
+  NngSockaddrFamily* {.exportc: "nng_sockaddr_family".} = enum
+    NNG_AF_UNSPEC = 0
+    NNG_AF_INPROC = 1
+    NNG_AF_IPC = 2
+    NNG_AF_INET = 3
+    NNG_AF_INET6 = 4
+    NNG_AF_ABSTRACT = 5
+
+template impl*(m: ptr NngMsgObj): ptr NngMsgImpl =
+  cast[ptr NngMsgImpl](m)
 
 var gHandleMtx: ptr Pthread_mutex = nil
 

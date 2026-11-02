@@ -48,7 +48,8 @@ proc nng_ctx_sendmsg*(
   let ctx = gContexts[c.id]
   if ctx.socket.engineKind in {engSub0, engPull0}:
     return cint(NNG_ENOTSUP)
-  var spMsg = SpMsg(header: msg.header, body: msg.body, pipeId: msg.pipeId)
+  var spMsg =
+    SpMsg(header: msg.impl.header, body: msg.impl.body, pipeId: msg.impl.pipeId)
   try:
     ctx.sendMsg(spMsg)
     nng_msg_free(msg)
@@ -127,11 +128,11 @@ proc nng_ctx_recvmsg*(
 
   try:
     let spMsg = ctx.recvMsg()
-    let m = createShared(NngMsgObj)
+    let m = createShared(NngMsgImpl)
     m.header = spMsg.header
     m.body = spMsg.body
     m.pipeId = spMsg.pipeId
-    msgp[] = m
+    msgp[] = cast[ptr NngMsgObj](m)
     return 0
   except CatchableError as e:
     return toCError(e)

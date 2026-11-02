@@ -1,5 +1,5 @@
 proc nng_udp_open*(
-    udpp: ptr ptr NngUdpObj, sa: ptr NngSockaddrStorage
+    udpp: ptr ptr NngUdpObj, sa: ptr NngSockaddr
 ): cint {.exportc, dynlib, cdecl.} =
   if udpp == nil:
     return cint(NNG_EINVAL)
@@ -15,7 +15,7 @@ proc nng_udp_close*(udp: ptr NngUdpObj) {.exportc, dynlib, cdecl.} =
     deallocShared(udp)
 
 proc nng_udp_sockname*(
-    udp: ptr NngUdpObj, sa: ptr NngSockaddrStorage
+    udp: ptr NngUdpObj, sa: ptr NngSockaddr
 ): cint {.exportc, dynlib, cdecl.} =
   return 0
 

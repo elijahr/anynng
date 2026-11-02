@@ -39,6 +39,31 @@ except ImportError as exc:
     sys.exit(1)
 
 
+def ensure_canonical_handle_typedefs(header_file: Path):
+    """Ensure canonical NNG handle typedef aliases (nng_socket, nng_dialer, etc.) are present."""
+    if not header_file.is_file():
+        return
+    content = header_file.read_text(encoding="utf-8")
+    typedefs = """
+/* Canonical NNG handle typedef aliases */
+#ifndef _NNG_HANDLE_TYPEDEFS_
+#define _NNG_HANDLE_TYPEDEFS_
+typedef struct nng_socket_s nng_socket;
+typedef struct nng_dialer_s nng_dialer;
+typedef struct nng_listener_s nng_listener;
+typedef struct nng_ctx_s nng_ctx;
+typedef struct nng_pipe_s nng_pipe;
+#endif
+"""
+    if "typedef struct nng_socket_s nng_socket;" not in content:
+        idx = content.rfind("#endif")
+        if idx != -1:
+            content = content[:idx] + typedefs + "\n" + content[idx:]
+        else:
+            content = content + typedefs
+        header_file.write_text(content, encoding="utf-8")
+
+
 def build_nim_header() -> Path:
     """Build or ensure dist/nimcache/anynng.h exists."""
     header_path = REPO_ROOT / "dist" / "nimcache" / "anynng.h"
@@ -68,16 +93,20 @@ def build_nim_header() -> Path:
         print(f"Error: expected header not found at {header_path}", file=sys.stderr)
         sys.exit(1)
 
+    ensure_canonical_handle_typedefs(header_path)
+    ensure_canonical_handle_typedefs(REPO_ROOT / "dist" / "include" / "anynng.h")
+
     print(f"      Generated header: {header_path} ({header_path.stat().st_size} bytes)")
     return header_path
 
 
 def verify_transforms_and_parameter_names(header_path: Path):
     """Verify NimCleanupTransform + NimJsonDocEnricher restore genuine parameter names."""
-    print("[2/5] Parsing C header with TreeSitter & enriching from Nim AST...")
-    ts = TreeSitterBackend()
+    print("[2/5] Parsing C header with Libclang & enriching from Nim AST...")
+    lc = LibclangBackend()
     code = header_path.read_text(encoding="utf-8")
-    raw_unit = ts.parse(code, str(header_path))
+    include_dirs = ["/Users/eek/.local/share/mise/installs/nim/2.2.12/lib"]
+    raw_unit = lc.parse(code, str(header_path), include_dirs=include_dirs)
 
     root_nim = REPO_ROOT / "src" / "anynng" / "c_api.nim"
     cleaned = raw_unit >> NimCleanupTransform()
@@ -156,8 +185,8 @@ def verify_headerkit_toml_targets():
 
 
 def verify_abi_signature_alignment(target_unit):
-    """Verify non-enum function signatures match upstream nng.h via DiffWriter."""
-    print("[5/5] Comparing C-ABI signatures against upstream nanomsg/nng v2.1.0 nng.h...")
+    """Verify non-enum function signatures and struct/union layouts match upstream nng.h via DiffWriter."""
+    print("[5/5] Comparing C-ABI signatures and struct/union layouts against upstream nanomsg/nng v2.1.0 nng.h...")
     upstream_nng = REPO_ROOT / ".cache" / "nng-upstream" / "include" / "nng" / "nng.h"
     upstream_inc = REPO_ROOT / ".cache" / "nng-upstream" / "include"
 
@@ -188,40 +217,50 @@ def verify_abi_signature_alignment(target_unit):
 
     base_enums = {d.name for d in baseline.declarations if isinstance(d, Enum)}
     target_funcs = {d.name for d in target_unit.declarations if isinstance(d, Function)}
+    target_types = {
+        d.name for d in target_unit.declarations
+        if hasattr(d, "name") and type(d).__name__ in ("Struct", "Union")
+    }
 
-    non_enum_breaking = []
+    breaking_defects = []
     for e in diff_report.get("entries", []):
         if e.get("severity") != "breaking":
             continue
         name = e.get("name")
-        if name not in target_funcs:
+        kind = e.get("kind")
+
+        # 1. Struct and Union breaking changes (layout, removed fields, field type changes)
+        if name in target_types:
+            breaking_defects.append(e)
             continue
 
-        b_type = e.get("baseline", "")
-        t_type = e.get("target", "")
+        # 2. Function signature breaking changes on implemented C-ABI functions
+        if name in target_funcs:
+            b_type = e.get("baseline", "")
+            t_type = e.get("target", "")
 
-        # Enum return type or enum parameter type representation in C is int
-        if b_type in base_enums and t_type == "int":
-            continue
+            # Enum return type or enum parameter type representation in C is int
+            if b_type in base_enums and t_type == "int":
+                continue
 
-        # Callback typedefs whose params have enums
-        if "nng_pipe_cb" in b_type or "nng_logger" in b_type:
-            continue
+            # Callback typedefs whose params have enums
+            if "nng_pipe_cb" in b_type or "nng_logger" in b_type:
+                continue
 
-        # Array parameter decayed to pointer (int[2] vs int*)
-        if name == "nng_socket_pair" and "int[2]" in b_type and t_type == "int*":
-            continue
+            # Array parameter decayed to pointer (int[2] vs int*)
+            if name == "nng_socket_pair" and "int[2]" in b_type and t_type == "int*":
+                continue
 
-        non_enum_breaking.append(e)
+            breaking_defects.append(e)
 
-    if non_enum_breaking:
-        print(f"FAIL: Detected {len(non_enum_breaking)} non-enum breaking signature change(s):", file=sys.stderr)
-        for b in non_enum_breaking:
+    if breaking_defects:
+        print(f"FAIL: Detected {len(breaking_defects)} breaking C-ABI change(s):", file=sys.stderr)
+        for b in breaking_defects:
             print(f"  - {b}", file=sys.stderr)
         sys.exit(1)
 
     common_funcs = len(set(target_funcs) & {d.name for d in baseline.declarations if isinstance(d, Function)})
-    print(f"      PASSED: 0 non-enum breaking signature defects across all {common_funcs} implemented NNG functions.")
+    print(f"      PASSED: 0 breaking defects across all {common_funcs} implemented functions and {len(target_types)} structs/unions.")
 
 
 def main():

@@ -240,10 +240,11 @@ proc nng_pipe_self_addr*(
   if pipe == nil:
     return cint(NNG_ENOENT)
   zeroMem(sa, sizeof(NngSockaddr))
-  sa.sa_family = 1 # NNG_AF_INPROC
+  sa.s_family = 1 # NNG_AF_INPROC
+  sa.s_inproc.sa_family = 1
   let addrStr = pipe.selfAddr()
   if addrStr.len > 0:
-    copyMem(addr sa.sa_pad[0], cstring(addrStr), min(addrStr.len, 127))
+    copyMem(addr sa.s_inproc.sa_name[0], cstring(addrStr), min(addrStr.len, 127))
   return 0
 
 proc nng_pipe_peer_addr*(
@@ -255,10 +256,11 @@ proc nng_pipe_peer_addr*(
   if pipe == nil:
     return cint(NNG_ENOENT)
   zeroMem(sa, sizeof(NngSockaddr))
-  sa.sa_family = 1 # NNG_AF_INPROC
+  sa.s_family = 1 # NNG_AF_INPROC
+  sa.s_inproc.sa_family = 1
   let addrStr = pipe.peerAddr()
   if addrStr.len > 0:
-    copyMem(addr sa.sa_pad[0], cstring(addrStr), min(addrStr.len, 127))
+    copyMem(addr sa.s_inproc.sa_name[0], cstring(addrStr), min(addrStr.len, 127))
   return 0
 
 proc nng_pipe_peer_cert*(
