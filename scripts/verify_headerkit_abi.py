@@ -21,11 +21,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def resolve_headerkit_dir() -> Path:
+    candidates: list[Path] = []
     if "HEADERKIT_DIR" in os.environ:
-        return Path(os.environ["HEADERKIT_DIR"]).resolve()
-    sibling = (REPO_ROOT.parent / "headerkit").resolve()
-    if sibling.is_dir():
-        return sibling
+        candidates.append(Path(os.environ["HEADERKIT_DIR"]).resolve())
+
+    # Sibling headerkit relative to this workspace/repo
+    candidates.append((REPO_ROOT.parent / "headerkit").resolve())
+
+    # Canonical repo root discovery via git common-dir
+    canonical_root: Path | None = None
     try:
         res = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
@@ -38,17 +42,37 @@ def resolve_headerkit_dir() -> Path:
             common_dir = Path(res.stdout.strip())
             repo = common_dir if common_dir.is_absolute() else (REPO_ROOT / common_dir).resolve()
             canonical_root = repo.parent if repo.name == ".git" else repo
-            candidate = (canonical_root.parent / "headerkit").resolve()
-            if candidate.is_dir():
-                return candidate
     except Exception:
         pass
-    return sibling
+
+    if canonical_root:
+        # Sibling headerkit of canonical repo
+        candidates.append((canonical_root.parent / "headerkit").resolve())
+        # Ratified headerkit strand in workspaces
+        candidates.append((canonical_root.parent / "workspaces" / "headerkit" / "task-headerkit-cffi-pyi-pointer-params" / "headerkit").resolve())
+
+    # Strand-relative check if running inside workspaces/anynng/<task>/anynng
+    try:
+        dev_workspaces = REPO_ROOT.parent.parent.parent
+        candidates.append((dev_workspaces / "headerkit" / "task-headerkit-cffi-pyi-pointer-params" / "headerkit").resolve())
+    except Exception:
+        pass
+
+    # Prioritize candidate that provides headerkit.backends.nim
+    for c in candidates:
+        if (c / "headerkit" / "backends" / "nim.py").is_file():
+            return c
+
+    for c in candidates:
+        if c.is_dir():
+            return c
+
+    return (REPO_ROOT.parent / "headerkit").resolve()
 
 
 HEADERKIT_DIR = resolve_headerkit_dir()
 
-if HEADERKIT_DIR.exists() and str(HEADERKIT_DIR) not in sys.path:
+if HEADERKIT_DIR.exists():
     sys.path.insert(0, str(HEADERKIT_DIR))
 
 try:

@@ -28,3 +28,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - refactor(abi): isolate HeaderKit prepare_parse layer, purge file-mutation shim and vestigial upstream headers (nuts_stat_shim.c and tests/upstream_shim/include), eliminate hardcoded paths, and parameterize verification in justfile (Task task-anynng-phase-f)
 - chore(deps): pin official headerkit[treesitter]>=0.50.0 from PyPI, update uv.lock with zero git URLs, and configure justfile verify-abi with uv run (Task task-anynng-headerkit-0500)
 - refactor(abi): migrate `headerkit.toml` and `scripts/verify_headerkit_abi.py` to first-class `NimBackend` (`backend = "nim"`) and `clean_nim_c_unit`, replacing legacy `nim_cleanup` and `nim_jsondoc` transforms (Task I.5)
+- chore(deps): drop [treesitter] extra from pyproject.toml and purge tree-sitter packages from uv.lock now that backend = "nim" uses libclang (Task task-anynng-nim-backend)
