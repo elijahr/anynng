@@ -1,9 +1,6 @@
-backend = "tree-sitter"
+backend = "nim"
 headers = ["dist/nimcache/anynng.h"]
-transforms = [
-    "nim_cleanup",
-    { name = "nim_jsondoc", nim_source_path = "src/anynng/c_api.nim" },
-]
+transforms = ["doc-parser"]
 
 [[targets]]
 name = "diff"

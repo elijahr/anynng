@@ -2,7 +2,7 @@
 """HeaderKit v2 C-ABI Verification & Signature Alignment Harness.
 
 Verifies:
-1. NimCleanupTransform and NimJsonDocEnricher transform pipeline.
+1. NimBackend C header cleanup and Nim compiler AST enrichment pipeline.
 2. Complete parameter name restoration from Nim source (zero _p0/_p1 suffixes).
 3. CffiWriter and PyiWriter generation with zero un-mangled suffixes.
 4. Headerkit multi-target [[targets]] pipeline execution (diff, cffi, pyi).
@@ -52,11 +52,10 @@ if HEADERKIT_DIR.exists() and str(HEADERKIT_DIR) not in sys.path:
     sys.path.insert(0, str(HEADERKIT_DIR))
 
 try:
-    from headerkit import NimCleanupTransform, NimJsonDocEnricher
     from headerkit._config import load_config
     from headerkit._generate import generate_targets
     from headerkit.backends.libclang import LibclangBackend
-    from headerkit.backends.treesitter import TreeSitterBackend
+    from headerkit.backends.nim import NimBackend, clean_nim_c_unit
     from headerkit.ir import Enum, Function
     from headerkit.writers.cffi import CffiWriter
     from headerkit.writers.diff import DiffWriter
@@ -101,18 +100,17 @@ def build_nim_header() -> Path:
 
 
 def verify_transforms_and_parameter_names(header_path: Path):
-    """Verify NimCleanupTransform + NimJsonDocEnricher restore genuine parameter names."""
-    print("[2/5] Parsing C header with Libclang & enriching from Nim AST...")
-    lc = LibclangBackend()
+    """Verify NimBackend and clean_nim_c_unit restore genuine parameter names from Nim AST."""
+    print("[2/5] Parsing C header with NimBackend (libclang) & enriching from Nim AST...")
     code = header_path.read_text(encoding="utf-8")
-    cleanup = NimCleanupTransform()
-    inc_dirs, extra_args, backend_opts = cleanup.prepare_parse(code, str(header_path), [], [])
-    raw_unit = lc.parse(code, str(header_path), include_dirs=inc_dirs, extra_args=extra_args, **backend_opts)
-
     root_nim = REPO_ROOT / "src" / "anynng" / "c_api.nim"
-    cleaned = raw_unit >> cleanup
-    enricher = NimJsonDocEnricher(nim_source_path=root_nim)
-    enriched = cleaned >> enricher
+    nim_backend = NimBackend(c_backend="libclang")
+    cleaned = nim_backend.parse(code, str(header_path))
+    enriched = clean_nim_c_unit(cleaned, nim_source_path=root_nim)
+    parsed_with_nim = nim_backend.parse(code, str(header_path), nim_source_path=root_nim)
+    if len(parsed_with_nim.declarations) != len(enriched.declarations):
+        print("FAIL: NimBackend.parse(..., nim_source_path=...) declaration count mismatch!", file=sys.stderr)
+        sys.exit(1)
 
     print(f"      Declarations after cleanup: {len(cleaned.declarations)}")
     print(f"      Declarations after enrichment: {len(enriched.declarations)}")
@@ -164,7 +162,7 @@ def verify_headerkit_toml_targets():
     cfg = load_config(cfg_file)
     results = generate_targets(
         cfg.targets,
-        default_backend_name=cfg.backend or "tree-sitter",
+        default_backend_name=cfg.backend or "nim",
         default_include_dirs=cfg.include_dirs or None,
         default_defines=cfg.defines or None,
         default_transforms=cfg.transforms or None,
