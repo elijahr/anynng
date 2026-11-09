@@ -29,3 +29,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - chore(deps): pin official headerkit[treesitter]>=0.50.0 from PyPI, update uv.lock with zero git URLs, and configure justfile verify-abi with uv run (Task task-anynng-headerkit-0500)
 - refactor(abi): migrate `headerkit.toml` and `scripts/verify_headerkit_abi.py` to first-class `NimBackend` (`backend = "nim"`) and `clean_nim_c_unit`, replacing legacy `nim_cleanup` and `nim_jsondoc` transforms (Task I.5)
 - chore(deps): drop [treesitter] extra from pyproject.toml and purge tree-sitter packages from uv.lock now that backend = "nim" uses libclang (Task task-anynng-nim-backend)
+- docs: add Experimental / Pre-Alpha status badge and `[!WARNING]` callout in `README.md`, update badge URLs to `elijahr/anynng`, and add `Development Status :: 2 - Pre-Alpha` classifier to `pyproject.toml` (Task I.7)

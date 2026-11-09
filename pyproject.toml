@@ -3,6 +3,9 @@ name = "anynng"
 version = "0.2.0"
 description = "Pure-Nim high-performance cross-platform NNG v2.1.0 implementation"
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+]
 dependencies = [
     "headerkit>=0.50.0",
 ]

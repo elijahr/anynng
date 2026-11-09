@@ -1,12 +1,15 @@
 # anynng
 
-[![CI](https://github.com/axiomantic/anynng/actions/workflows/ci.yml/badge.svg)](https://github.com/axiomantic/anynng/actions/workflows/ci.yml)
-
-[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://axiomantic.github.io/anynng/)
-
-[![Release](https://img.shields.io/github/v/release/axiomantic/anynng)](https://github.com/axiomantic/anynng/releases/latest)
-[![License](https://img.shields.io/github/license/axiomantic/anynng)](LICENSE)
+[![Status: Experimental](https://img.shields.io/badge/status-experimental-orange.svg)](#status)
+[![CI](https://github.com/elijahr/anynng/actions/workflows/ci.yml/badge.svg)](https://github.com/elijahr/anynng/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://elijahr.github.io/anynng/)
+[![Release](https://img.shields.io/github/v/release/elijahr/anynng)](https://github.com/elijahr/anynng/releases/latest)
+[![License](https://img.shields.io/github/license/elijahr/anynng)](LICENSE)
 [![Nim](https://img.shields.io/badge/Nim-2.2%2B-yellow.svg)](https://nim-lang.org)
+
+> [!WARNING]
+> **Experimental / Pre-Alpha Software — Not Ready for Production**
+> This project is an active research and development prototype. APIs, ABI layouts, and wire formats are unstable and subject to breaking changes without notice. Do not use in production systems.
 
 Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG / Scalability Protocols implementation
 
