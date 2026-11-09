@@ -1,11 +1,34 @@
 [project]
 name = "anynng"
 version = "0.2.0"
-description = "Pure-Nim high-performance cross-platform NNG v2.1.0 implementation"
+description = "[EXPERIMENTAL] Pure Nim 2.0 / Nimony implementation of NNG v2.1.0 Scalability Protocols with C-ABI & WebAssembly/TypeScript bindings"
 requires-python = ">=3.11"
+keywords = [
+    "nim",
+    "nng",
+    "nanomsg",
+    "scalability-protocols",
+    "messaging",
+    "ipc",
+    "tcp",
+    "websocket",
+    "wasm",
+]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking",
 ]
 dependencies = [
     "headerkit>=0.50.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/elijahr/anynng"
+Repository = "https://github.com/elijahr/anynng"
+Issues = "https://github.com/elijahr/anynng/issues"
+Documentation = "https://elijahr.github.io/anynng/"

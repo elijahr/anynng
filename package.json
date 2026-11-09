@@ -1,7 +1,15 @@
 {
   "name": "@axiomantic/anynng",
-  "version": "0.0.1",
-  "description": "Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG / Scalability Protocols implementation",
+  "version": "0.2.0",
+  "description": "[EXPERIMENTAL] Pure Nim 2.0 / Nimony implementation of NNG v2.1.0 Scalability Protocols with C-ABI & WebAssembly/TypeScript bindings",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elijahr/anynng.git"
+  },
+  "homepage": "https://github.com/elijahr/anynng",
+  "bugs": {
+    "url": "https://github.com/elijahr/anynng/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

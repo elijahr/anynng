@@ -46,9 +46,17 @@ dist/
 !.github/
 
 # Swarm, ceremony, and local development files
+.garden/
 garden.toml
 garden-swarm.json
 garden-prompts.md
+vine.toml
+.vine.json
+.rhizo.*
+*.lock
+!uv.lock
+!package-lock.json
+!docs/package-lock.json
 implementation_plan.md
 understanding.md
 audit_report.md

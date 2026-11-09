@@ -5,7 +5,7 @@ import mermaid from 'astro-mermaid';
 import starlightImageZoom from 'starlight-image-zoom';
 
 export default defineConfig({
-  site: 'https://axiomantic.github.io',
+  site: 'https://elijahr.github.io',
   base: '/anynng',
   integrations: [
     mermaid(),
@@ -15,7 +15,7 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/axiomantic/anynng'
+          href: 'https://github.com/elijahr/anynng'
         }
       ],
       plugins: [

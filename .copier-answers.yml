@@ -6,7 +6,7 @@ description: Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, I
     UDP, Inproc) NNG / Scalability Protocols implementation
 docs_engine: starlight
 enable_momus_review: true
-github_owner: axiomantic
+github_owner: elijahr
 has_c_cpp: false
 has_nim: true
 has_python: false

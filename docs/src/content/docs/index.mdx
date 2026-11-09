@@ -1,9 +1,9 @@
 ---
 title: anynng
-description: Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG / Scalability Protocols implementation
+description: Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG v2.1.0 Scalability Protocols implementation
 template: splash
 hero:
-  tagline: Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG / Scalability Protocols implementation
+  tagline: Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc, TLS) NNG v2.1.0 Scalability Protocols implementation with C-ABI & TypeScript/WASM bindings
   image:
     html: "⚡"
   actions:
@@ -19,19 +19,32 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
+> **Experimental / Pre-Alpha Software** — `anynng` is an active research and development prototype. APIs, ABI layouts, and wire formats are subject to breaking changes without notice.
+
 ## Highlights
 
 <CardGrid stagger>
-  <Card title="Zero Overhead" icon="rocket">
-    Native C performance with expressive Nim syntax and compile-time guarantees.
+  <Card title="11 Scalability Protocols" icon="rocket">
+    Full Sans-I/O state machines for `PAIR0`, `PAIR1`, `REQ0`, `REP0`, `PUB0`, `SUB0`, `PUSH0`, `PULL0`, `SURVEYOR0`, `RESPONDENT0`, and `BUS0` with concurrent `Context` multiplexing.
   </Card>
-  <Card title="Modern CI & Tooling" icon="seti:pipeline">
-    Pre-commit gates, automated dependency management, and hardened Momus AI reviews.
+  <Card title="Multi-Transport Native & TLS" icon="random">
+    Communicate seamlessly over `inproc://`, `tcp://`, `tls+tcp://` (OpenSSL 3), `ipc://`, `udp://`, `ws://`, and `wss://` with wire-level compatibility against C `libnng`.
   </Card>
-  <Card title="Interactive Documentation" icon="document">
-    Built-in Mermaid flowcharts, Expressive Code syntax highlighting, and offline Pagefind search.
+  <Card title="Drop-In <nng/nng.h> C-ABI" icon="setting">
+    Exports the NNG v2.1.0 C-ABI (`src/anynng/c_api.nim`), tested against the upstream `nanomsg/nng` NUTS test suite and continuously audited via HeaderKit `NimBackend`.
   </Card>
-  <Card title="Versioned Releases" icon="seti:git">
-    Automated version snapshots, release notes extraction, and idempotent GitHub releases.
+  <Card title="WebAssembly & TypeScript SDK" icon="puzzle">
+    Compiles the Nim protocol core to a compact `wasm32-wasi` module with idiomatic TypeScript classes for Browser and Node.js WebSocket messaging.
   </Card>
 </CardGrid>
+
+## Protocol Matrix
+
+| Family | Protocol Roles | Subprotocol Identifier | Primary Pattern |
+| :--- | :--- | :--- | :--- |
+| **Pair** | `PAIR0`, `PAIR1` | `pair.sp.nanomsg.org`, `pair1.sp.nanomsg.org` | Bidirectional 1-to-1 & polyamorous peer links |
+| **Request / Reply** | `REQ0`, `REP0` | `req.sp.nanomsg.org`, `rep.sp.nanomsg.org` | Stateless RPC with automatic retries & `Context` multiplexing |
+| **Publish / Subscribe** | `PUB0`, `SUB0` | `pub.sp.nanomsg.org`, `sub.sp.nanomsg.org` | Topic-filtered fan-out broadcast |
+| **Pipeline** | `PUSH0`, `PULL0` | `push.sp.nanomsg.org`, `pull.sp.nanomsg.org` | Load-balanced fan-out & fair-queued work aggregation |
+| **Survey** | `SURVEYOR0`, `RESPONDENT0` | `surveyor.sp.nanomsg.org`, `respondent.sp.nanomsg.org` | Timed cluster-wide queries & response gathering |
+| **Bus** | `BUS0` | `bus.sp.nanomsg.org` | Many-to-many mesh routing |

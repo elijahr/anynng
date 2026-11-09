@@ -1,9 +1,9 @@
 # Package
 
-version = "0.0.1"
+version = "0.2.0"
 author = "Axiomantic Maintainers"
 description =
-  "Pure-Nim multi-target (C, JS, WASM) and multi-transport (WS, TCP, IPC, UDP, Inproc) NNG / Scalability Protocols implementation"
+  "[EXPERIMENTAL] Pure Nim 2.0 / Nimony implementation of NNG v2.1.0 Scalability Protocols with C-ABI & WebAssembly/TypeScript bindings"
 license = "MIT"
 srcDir = "src"
 installExt = @["nim"]
