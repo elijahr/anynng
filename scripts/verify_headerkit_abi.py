@@ -48,15 +48,24 @@ def resolve_headerkit_dir() -> Path:
     if canonical_root:
         # Sibling headerkit of canonical repo
         candidates.append((canonical_root.parent / "headerkit").resolve())
-        # Ratified headerkit strand in workspaces
-        candidates.append((canonical_root.parent / "workspaces" / "headerkit" / "task-headerkit-cffi-pyi-pointer-params" / "headerkit").resolve())
 
-    # Strand-relative check if running inside workspaces/anynng/<task>/anynng
+    # Dynamic workspace discovery (e.g. workspaces/headerkit/*/headerkit)
+    hk_workspaces: list[Path] = []
+    if canonical_root:
+        hk_workspaces.append(canonical_root.parent / "workspaces" / "headerkit")
     try:
-        dev_workspaces = REPO_ROOT.parent.parent.parent
-        candidates.append((dev_workspaces / "headerkit" / "task-headerkit-cffi-pyi-pointer-params" / "headerkit").resolve())
+        hk_workspaces.append(REPO_ROOT.parent.parent.parent / "headerkit")
     except Exception:
         pass
+
+    for ws_dir in hk_workspaces:
+        if ws_dir.is_dir():
+            for child in ws_dir.iterdir():
+                sub = child / "headerkit"
+                if (sub / "headerkit" / "backends" / "nim.py").is_file():
+                    candidates.append(sub.resolve())
+                elif (child / "backends" / "nim.py").is_file():
+                    candidates.append(child.resolve())
 
     # Prioritize candidate that provides headerkit.backends.nim
     for c in candidates:
