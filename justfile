@@ -27,7 +27,7 @@ test-nng-spec:
 
 # HeaderKit v2 C-ABI Signature & Pipeline Verification
 verify-abi:
-    python3 scripts/verify_headerkit_abi.py
+    uv run python scripts/verify_headerkit_abi.py
 
 # 3. Linter Execution
 lint:

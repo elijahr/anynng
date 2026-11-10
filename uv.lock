@@ -11,13 +11,13 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "headerkit", specifier = ">=0.50.0" }]
+requires-dist = [{ name = "headerkit", specifier = ">=0.51.0" }]
 
 [[package]]
 name = "headerkit"
-version = "0.50.0"
+version = "0.51.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/57/7b/98db438980b4d3655abe65b2cdd97cd205519e68f318f822b457a8294b58/headerkit-0.50.0.tar.gz", hash = "sha256:962d1a3ab0fce10e1e3c0d7a4fdf855e3532d5e2d3429513a109296375046d0d", size = 1490604, upload-time = "2026-11-03T08:46:19.034Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/2d/55ed248c8aa6b33b29212c10d8ed83e1da306d78c80946e876f2aa37b636/headerkit-0.51.0.tar.gz", hash = "sha256:8ad304ef52dfe2336a80d6e0ad0924cc8af536de5628cd80cd170dc0f4a7bf6f", size = 1550216, upload-time = "2026-11-10T05:50:40.005Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/30/d56eaa648ffff65ef603e26b86a678eeb2b6684569bc82a523481855e9be/headerkit-0.50.0-py3-none-any.whl", hash = "sha256:4550d59ef525499422c952abfbc43d53fe7a094720ff192beeb96476a03e08ed", size = 809940, upload-time = "2026-11-03T08:46:17.06Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/83/cc1f10e07880b3d437a88bbc3318be101bb2bd304b36ecf32e0b613d08c7/headerkit-0.51.0-py3-none-any.whl", hash = "sha256:449e665188ec60058ec6b3e23d65ffec9901c02b73d448b01c1c1066b7da3af3", size = 850432, upload-time = "2026-11-10T05:50:38.003Z" },
 ]
