@@ -1,7 +1,7 @@
 # native_ipc.nim - Native Async Unix Domain Socket Transport (ipc://)
 # Licensed under MIT License.
 
-when not defined(js):
+when not defined(js) and not defined(nimdoc):
   import std/[asyncnet, asyncdispatch, nativesockets, net, posix, os]
   import ../core/types
   import ../core/framing/stream_framing
@@ -204,3 +204,32 @@ when not defined(js):
       if not listener.serverSock.isClosed:
         listener.serverSock.close()
       discard posix.unlink(cstring(listener.path))
+else:
+  import std/[asyncnet, asyncdispatch]
+  import ../core/types
+
+  type IpcListener* = ref object
+    serverSock*: AsyncSocket
+    closed*: bool
+    path*: string
+    proto*: SpProto
+
+  proc connectIpcAsync*(
+      path: string,
+      proto: SpProto,
+      onFrame: proc(pid: PipeId, frame: seq[byte]) {.closure.},
+      onClose: proc(pid: PipeId) {.closure.},
+  ): Future[Pipe] {.async.} =
+    discard
+
+  proc listenIpcAsync*(
+      path: string,
+      proto: SpProto,
+      onPipeAdded: proc(pipe: Pipe) {.closure.},
+      onFrame: proc(pid: PipeId, frame: seq[byte]) {.closure.},
+      onClose: proc(pid: PipeId) {.closure.},
+  ): Future[IpcListener] {.async.} =
+    discard
+
+  proc close*(listener: IpcListener) =
+    discard
