@@ -60,10 +60,10 @@ when not defined(js):
       addr saddr.sun_path[0], cstring(path), min(path.len, sizeof(saddr.sun_path) - 1)
     )
 
-    if posix.connect(cliFd, cast[ptr SockAddr](addr saddr), SockLen(sizeof(saddr))) < 0:
+    if posix.connect(posix.SocketHandle(cliFd), cast[ptr SockAddr](addr saddr), SockLen(sizeof(saddr))) < 0:
       let err = osLastError()
       if err.int != EINPROGRESS and err.int != 0:
-        discard posix.close(cliFd)
+        discard posix.close(posix.SocketHandle(cliFd))
         raiseOSError(err)
 
     asyncdispatch.register(cliFd.AsyncFD)
@@ -130,15 +130,15 @@ when not defined(js):
       addr saddr.sun_path[0], cstring(path), min(path.len, sizeof(saddr.sun_path) - 1)
     )
 
-    if posix.bindSocket(srvFd, cast[ptr SockAddr](addr saddr), SockLen(sizeof(saddr))) <
+    if posix.bindSocket(posix.SocketHandle(srvFd), cast[ptr SockAddr](addr saddr), SockLen(sizeof(saddr))) <
         0:
       let err = osLastError()
-      discard posix.close(srvFd)
+      discard posix.close(posix.SocketHandle(srvFd))
       raiseOSError(err)
 
-    if posix.listen(srvFd, 128.cint) < 0:
+    if posix.listen(posix.SocketHandle(srvFd), 128.cint) < 0:
       let err = osLastError()
-      discard posix.close(srvFd)
+      discard posix.close(posix.SocketHandle(srvFd))
       raiseOSError(err)
 
     asyncdispatch.register(srvFd.AsyncFD)
